@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Utterancer Inspector</title>
+
+  <!-- DataTables -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css" />
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+  <!-- Wavesurfer.js -->
+  <script src="https://unpkg.com/wavesurfer.js@7"></script>
+  <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
+
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1400px; margin: 1em auto; padding: 0 1em; }
+    h2 { margin-bottom: 0.2em; }
+    #meta { color: #666; font-size: 0.9em; margin-bottom: 1em; }
+    #error { color: #c00; padding: 1em; border: 1px solid #c00; border-radius: 4px; }
+
+    /* Corpus picker */
+    #corpusPicker { display: flex; align-items: center; gap: 10px; margin-bottom: 1em; font-size: 0.95em; }
+    #corpusSelect { font-family: ui-monospace, Menlo, monospace; padding: 5px 8px; border: 1px solid #888; border-radius: 3px; min-width: 320px; }
+
+    /* Distribution panel */
+    #distribution { display: grid; grid-template-columns: auto 1fr; gap: 1.5em; margin: 1em 0; padding: 0.8em 1em; background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em; }
+    #distStats { display: grid; grid-template-columns: auto auto; column-gap: 1em; row-gap: 2px; font-family: ui-monospace, Menlo, monospace; }
+    #distStats .label { color: #666; }
+    #distStats .value { text-align: right; }
+    #distHist { font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; line-height: 1.35; white-space: pre; color: #333; align-self: center; }
+    #distHist .bucket-label { color: #666; }
+    #distHist .bar { color: #4a90e2; }
+    #distHist .bar.warn { color: #e2904a; }
+    #distHist .count { color: #333; }
+
+    #waveform { width: 100%; height: 128px; border: 1px solid #ccc; }
+    /* Wavesurfer v7 manages its own internal horizontal scroll. Style the
+       scrollbar to be obvious and grabbable — the default is near-invisible
+       on macOS and the scroll affordance matters for a 47-minute recording. */
+    #waveform ::-webkit-scrollbar { height: 12px; }
+    #waveform ::-webkit-scrollbar-track { background: #f0f0f0; border-radius: 6px; }
+    #waveform ::-webkit-scrollbar-thumb { background: #aaa; border-radius: 6px; }
+    #waveform ::-webkit-scrollbar-thumb:hover { background: #888; }
+
+    #audioControls { display: flex; align-items: center; gap: 12px; margin: 10px 0 6px; }
+    .time-display { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; color: #444; padding: 4px 10px; background: #f0f0f0; border-radius: 3px; min-width: 170px; text-align: center; }
+    #playPause { padding: 6px 14px; font-size: 1em; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #f5f5f5; min-width: 90px; }
+    #playPause:hover { background: #e8e8e8; }
+    .hint { color: #888; font-size: 0.85em; }
+
+    #zoomControl, #adjustControl { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 0.9em; }
+    #zoomSlider { width: 160px; }
+
+    #overridesReset, #downloadJson { padding: 3px 8px; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #f5f5f5; }
+
+    .play-btn { cursor: pointer; padding: 4px 10px; border: 1px solid #888; border-radius: 3px; background: #f5f5f5; }
+    .play-btn:hover { background: #e8e8e8; }
+
+    .reset-btn { cursor: pointer; padding: 2px 6px; font-size: 0.8em; border: 1px solid #aaa; border-radius: 3px; background: #fff; color: #666; margin-left: 4px; visibility: hidden; }
+    .reset-btn:hover { background: #ffe0e0; border-color: #c00; color: #c00; }
+    tr.has-override .reset-btn { visibility: visible; }
+
+    #utteranceTableContainer { height: 500px; overflow-y: scroll; margin-top: 1em; }
+
+    td.num { font-family: ui-monospace, Menlo, monospace; text-align: right; white-space: nowrap; }
+    tr.playing { background: #fff59d !important; }
+    tr.has-override td:first-child::before { content: "✎ "; color: #4a90e2; font-weight: bold; }
+
+    .romanised { display: block; margin-top: 4px; color: #555; font-style: italic; font-size: 0.92em; line-height: 1.35; font-family: ui-monospace, Menlo, monospace; }
+    .romanised::before { content: "↪ "; color: #888; font-style: normal; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <h2>Utterancer Inspector</h2>
+  <div id="meta">—</div>
+  <div id="error" style="display:none"></div>
+
+  <div id="corpusPicker">
+    <label for="corpusSelect">Corpus:</label>
+    <select id="corpusSelect"></select>
+    <span class="hint">selecting a corpus updates the URL and reloads</span>
+  </div>
+
+  <div id="distribution" style="display:none">
+    <div id="distStats"></div>
+    <div id="distHist"></div>
+  </div>
+
+  <div id="waveform"></div>
+
+  <div id="audioControls">
+    <button id="playPause" type="button">▶ Play</button>
+    <span id="timeDisplay" class="time-display">0:00.00 / 0:00.00</span>
+    <span class="hint">spacebar toggles · click waveform to seek · scroll horizontally · drag region edges to adjust · zoom is sticky</span>
+  </div>
+
+  <div id="zoomControl">
+    <span>🔍 Zoom:</span>
+    <input type="range" id="zoomSlider" min="1" max="500" step="5" />
+    <span id="zoomLabel">—</span>
+    <button id="zoomReset">Fit</button>
+  </div>
+
+  <div id="adjustControl">
+    <span>⏱ Adjustments:</span>
+    <span><span id="overrideCount">0</span> persisted</span>
+    <button id="overridesReset" title="Clear all manual boundary adjustments for this recording">Clear adjustments</button>
+    <button id="downloadJson" title="Download utterances JSON with reviewer adjustments">⬇ Download JSON</button>
+    <span class="hint">click ▶ to play · drag a region edge to adjust · adjustments auto-save</span>
+  </div>
+
+  <div id="utteranceTableContainer">
+    <table id="utteranceTable" class="display" style="width:100%">
+      <thead><tr><th>#</th><th>Play</th><th>Start</th><th>End</th><th>Dur</th><th>Utterance</th></tr></thead>
+    </table>
+  </div>
+
+  <script>
+    const CORPORA = {
+      "eng_obama-unga71": {
+        recording:  "data/eng_obama-unga71/20160920_POTUS_Opening_of_71st_Session_General_Assembly.opus",
+        utterances: "data/eng_obama-unga71/20160920_POTUS_Opening_of_71st_Session_General_Assembly___utterances.json",
+      },
+      "hin_ekka-premchand-do-sakhiyan-ch9": {
+        recording:  "data/hin_ekka-premchand-do-sakhiyan-ch9/dosakhiyan_09_premchand_128kb.opus",
+        utterances: "data/hin_ekka-premchand-do-sakhiyan-ch9/dosakhiyan_09_premchand_128kb___utterances.json",
+      },
+    };
+    const DEFAULT_CORPUS_KEY = "eng_obama-unga71";
+
+    const params = new URLSearchParams(location.search);
+    let recordingUrl  = params.get('recording');
+    let utterancesUrl = params.get('utterances');
+
+    if (!recordingUrl && !utterancesUrl) {
+      const c = CORPORA[DEFAULT_CORPUS_KEY];
+      const next = new URLSearchParams({ recording: c.recording, utterances: c.utterances });
+      location.replace('?' + next.toString());
+      throw new Error('Redirecting to default corpus');
+    }
+
+    const $select = $('#corpusSelect');
+    $select.append($('<option>').val('').text('— pick a corpus —'));
+    for (const key of Object.keys(CORPORA)) {
+      $select.append($('<option>').val(key).text(key));
+    }
+    const matchingKey = Object.keys(CORPORA).find(k =>
+      CORPORA[k].recording === recordingUrl && CORPORA[k].utterances === utterancesUrl
+    );
+    if (matchingKey) $select.val(matchingKey);
+    $select.on('change', function () {
+      const key = this.value;
+      if (!key) return;
+      const c = CORPORA[key];
+      const next = new URLSearchParams({ recording: c.recording, utterances: c.utterances });
+      location.search = '?' + next.toString();
+    });
+
+    if (!recordingUrl || !utterancesUrl) {
+      $('#error').show().html('Missing required URL parameters. Either pick a corpus from the dropdown above, or pass <code>?recording=&lt;url&gt;&amp;utterances=&lt;url&gt;</code> directly.');
+      throw new Error('Missing recording or utterances parameter');
+    }
+
+    $('#meta').text(`recording: ${recordingUrl}  ·  utterances: ${utterancesUrl}`);
+
+    const OVERRIDE_KEY = `utterancer:overrides:${recordingUrl}`;
+    let overrides = {};
+    try { overrides = JSON.parse(localStorage.getItem(OVERRIDE_KEY) || '{}'); }
+    catch (e) { console.warn('Failed to parse overrides; starting fresh', e); overrides = {}; }
+
+    function saveOverrides() { localStorage.setItem(OVERRIDE_KEY, JSON.stringify(overrides)); updateOverrideCount(); }
+    function updateOverrideCount() { $('#overrideCount').text(Object.keys(overrides).length); }
+    function getEffectiveBounds(utterance, index) {
+      if (overrides[index]) return { start: overrides[index].start, end: overrides[index].end };
+      return { start: utterance.start, end: utterance.end };
+    }
+    function setOverride(index, start, end) { overrides[index] = { start, end }; saveOverrides(); }
+    function clearOverride(index) { delete overrides[index]; saveOverrides(); }
+
+    let wavesurfer, regionsPlugin, dataTable;
+    let utterances = [];
+    let activeStopAt = null;
+    let activeRowEl = null;
+    let activeIndex = null;
+    let activeRegion = null;
+    let initialZoom = 0;
+    let audioDuration = 0;
+    let wavesurferReady = false;
+    let utterancesLoaded = false;
+
+    function drawAllRegions() {
+      // Pre-draw a region for every utterance. Each region uses the
+      // override bounds if one exists, otherwise the raw pipeline bounds.
+      // Region inventory matches utterance inventory for the page lifetime.
+      // Gated on both wavesurfer-ready and utterances-loaded since either
+      // can arrive first.
+      if (!wavesurferReady || !utterancesLoaded) return;
+      if (regionsByIndex.size > 0) return;   // already drawn
+      for (let i = 0; i < utterances.length; i++) {
+        const u = utterances[i];
+        const ov = overrides[i];
+        const color = ov ? COLOR_ADJUSTED : COLOR_UNTOUCHED;
+        const start = ov ? ov.start : u.start;
+        const end   = ov ? ov.end   : u.end;
+        createRegion(i, start, end, color);
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    function renderUtterance(row) {
+      const text = (row.text || row.sentence || '').trim();
+      const textHtml = text ? escapeHtml(text) : '<em>—</em>';
+      const rom = row.text_romanised;
+      if (rom && typeof rom === 'string' && rom.trim() && rom.trim() !== text) {
+        return textHtml + '<span class="romanised">' + escapeHtml(rom.trim()) + '</span>';
+      }
+      return textHtml;
+    }
+
+function exitSegmentMode() {
+      // Demote the playing region back to its resting colour. The region
+      // stays on the waveform — we just stop highlighting it as active.
+      if (activeIndex !== null) {
+        const region = regionsByIndex.get(activeIndex);
+        if (region) setRegionColor(region, restingColorFor(activeIndex));
+      }
+      activeStopAt = null;
+      activeIndex = null;
+      activeRegion = null;
+      if (activeRowEl) { activeRowEl.classList.remove('playing'); activeRowEl = null; }
+    }
+
+    const regionsByIndex = new Map();
+    // Three region colours, one per state. Every utterance has a region;
+    // the colour tells you the state. There is no "transient" — that was a
+    // leftover from when regions were created on play.
+    const COLOR_UNTOUCHED = 'rgba(150, 150, 150, 0.12)';  // grey: raw pipeline, not adjusted
+    const COLOR_ADJUSTED  = 'rgba(74, 144, 226, 0.30)';   // blue: persisted override
+    const COLOR_PLAYING   = 'rgba(255, 235, 59, 0.55)';   // yellow: currently playing
+
+    function setRegionColor(region, color) {
+      if (typeof region.setOptions === 'function') {
+        try { region.setOptions({ color }); return; } catch (e) {}
+      }
+      if (region.element && region.element.style) region.element.style.background = color;
+    }
+    function createRegion(index, start, end, color) {
+      const region = regionsPlugin.addRegion({ start, end, color, drag: true, resize: true, data: { index } });
+      regionsByIndex.set(index, region);
+      return region;
+    }
+    function removeRegion(index) {
+      const region = regionsByIndex.get(index);
+      if (region) { region.remove(); regionsByIndex.delete(index); }
+    }
+
+    function restingColorFor(index) {
+      return overrides[index] ? COLOR_ADJUSTED : COLOR_UNTOUCHED;
+    }
+
+    function scrollRegionIntoView(start, end) {
+      // Scroll the waveform horizontally so the played region is visible.
+      // Does NOT change zoom — the user picks zoom and we respect it.
+      // Place the region's start at ~20% from the viewport's left edge
+      // so the listener sees context on both sides.
+      const pxPerSec = wavesurfer.options.minPxPerSec || 50;
+      const viewportPx = $('#waveform').width();
+      const regionStartPx = start * pxPerSec;
+      const targetScrollPx = Math.max(0, regionStartPx - viewportPx * 0.20);
+      if (typeof wavesurfer.setScroll === 'function') {
+        wavesurfer.setScroll(targetScrollPx);
+      } else {
+        // Fallback for runtimes without setScroll: write to the internal
+        // scroll container directly.
+        const scrollEl = wavesurfer.getWrapper && wavesurfer.getWrapper();
+        if (scrollEl && scrollEl.parentElement) {
+          scrollEl.parentElement.scrollLeft = targetScrollPx;
+        }
+      }
+    }
+
+    function playSegment(start, end, rowEl, index) {
+      // Demote any previously playing region back to its resting colour.
+      if (activeIndex !== null && activeIndex !== index) {
+        const prev = regionsByIndex.get(activeIndex);
+        if (prev) setRegionColor(prev, restingColorFor(activeIndex));
+      }
+      if (activeRowEl) activeRowEl.classList.remove('playing');
+
+      // Promote this utterance's region to playing colour. The region
+      // always exists (pre-drawn on load); we just recolour it.
+      const region = regionsByIndex.get(index);
+      if (region) setRegionColor(region, COLOR_PLAYING);
+      activeRegion = region || null;
+
+      if (rowEl) { rowEl.classList.add('playing'); activeRowEl = rowEl; }
+      activeStopAt = end;
+      activeIndex = index;
+
+      scrollRegionIntoView(start, end);
+      wavesurfer.play(start);
+    }
+
+    function refreshRowOverrideMarker(index) {
+      const $tr = $('#utteranceTable tbody tr').filter(function () { return $(this).data('index') === index; });
+      if (overrides[index]) $tr.addClass('has-override'); else $tr.removeClass('has-override');
+    }
+
+    function quantile(sorted, q) {
+      if (!sorted.length) return null;
+      const i = (sorted.length - 1) * q;
+      const lo = Math.floor(i), hi = Math.ceil(i);
+      if (lo === hi) return sorted[lo];
+      return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+    }
+    function renderDistribution(rows) {
+      const durations = rows.map(r => r.end - r.start).sort((a, b) => a - b);
+      const n = durations.length; if (!n) return;
+      const total = durations.reduce((s, d) => s + d, 0);
+      const mean = total / n;
+      const stats = [
+        ['n', n], ['total', `${total.toFixed(1)}s  (${(total / 60).toFixed(1)} min)`],
+        ['min', `${durations[0].toFixed(2)}s`], ['p25', `${quantile(durations, 0.25).toFixed(2)}s`],
+        ['median', `${quantile(durations, 0.50).toFixed(2)}s`], ['mean', `${mean.toFixed(2)}s`],
+        ['p75', `${quantile(durations, 0.75).toFixed(2)}s`], ['p95', `${quantile(durations, 0.95).toFixed(2)}s`],
+        ['max', `${durations[n - 1].toFixed(2)}s`],
+      ];
+      const $stats = $('#distStats').empty();
+      for (const [k, v] of stats) {
+        $stats.append($('<span class="label">').text(k));
+        $stats.append($('<span class="value">').text(v));
+      }
+      const buckets = [
+        { lo: 0,  hi: 2,        label: ' 0– 2s' },
+        { lo: 2,  hi: 5,        label: ' 2– 5s' },
+        { lo: 5,  hi: 10,       label: ' 5–10s' },
+        { lo: 10, hi: 15,       label: '10–15s' },
+        { lo: 15, hi: Infinity, label: '15+ s' },
+      ];
+      const counts = buckets.map(b => durations.filter(d => d >= b.lo && d < b.hi).length);
+      const maxCount = Math.max(...counts, 1);
+      const BAR_WIDTH = 40;
+      const histLines = buckets.map((b, i) => {
+        const count = counts[i];
+        const pct = (100 * count / n).toFixed(1);
+        const barLen = Math.round(BAR_WIDTH * count / maxCount);
+        const isWarn = (b.lo >= 15) && (count > 0);
+        const barClass = isWarn ? 'bar warn' : 'bar';
+        const bar = '█'.repeat(barLen);
+        return `<span class="bucket-label">${b.label}</span>  <span class="count">${String(count).padStart(4)}</span> (${String(pct).padStart(5)}%)  <span class="${barClass}">${bar}</span>`;
+      });
+      $('#distHist').html(histLines.join('\n'));
+      $('#distribution').show();
+    }
+
+    $(document).ready(function () {
+      updateOverrideCount();
+      regionsPlugin = window.WaveSurfer.Regions.create();
+      wavesurfer = WaveSurfer.create({
+        container: '#waveform',
+        waveColor: '#d9dcff',
+        progressColor: '#9aa0d9',
+        cursorColor: '#0000ff',
+        height: 128,
+        backend: 'mediaelement',
+        plugins: [regionsPlugin],
+        barWidth: 1,
+        barGap: 0,
+        minPxPerSec: 50,    // start zoomed in — waveform exceeds container width
+        autoScroll: true,   // keep the playhead in view during playback
+        autoCenter: true,   // centre the playhead while playing for context
+        fillParent: false,  // allow horizontal overflow rather than scaling to fit
+      });
+      wavesurfer.load(recordingUrl);
+
+      regionsPlugin.on('region-update-end', (region) => {
+        const idx = region.data && region.data.index;
+        if (typeof idx !== 'number') return;
+        const wasOverridden = !!overrides[idx];
+        setOverride(idx, region.start, region.end);
+        // Promote colour: a previously-untouched region just got dragged,
+        // so it's now an adjustment. If it's currently playing, leave the
+        // yellow colour alone — exitSegmentMode will demote correctly.
+        if (!wasOverridden && region !== activeRegion) {
+          setRegionColor(region, COLOR_ADJUSTED);
+        }
+        if (region === activeRegion) activeStopAt = region.end;
+        refreshRowOverrideMarker(idx);
+      });
+      regionsPlugin.on('region-updated', (region) => {
+        if (region === activeRegion) activeStopAt = region.end;
+      });
+
+      // Time display helpers: format M:SS.ss and refresh on every audio event.
+      function formatTime(s) {
+        if (!Number.isFinite(s)) return '0:00.00';
+        const sign = s < 0 ? '-' : '';
+        s = Math.abs(s);
+        const m = Math.floor(s / 60);
+        const sec = s - m * 60;
+        return `${sign}${m}:${sec.toFixed(2).padStart(5, '0')}`;
+      }
+      function updateTimeDisplay() {
+        const t = wavesurfer.getCurrentTime();
+        const d = audioDuration || wavesurfer.getDuration();
+        $('#timeDisplay').text(`${formatTime(t)} / ${formatTime(d)}`);
+      }
+
+      wavesurfer.on('audioprocess', (time) => {
+        updateTimeDisplay();
+        if (activeStopAt !== null && time >= activeStopAt) {
+          wavesurfer.pause();
+          exitSegmentMode();
+        }
+      });
+      wavesurfer.on('seeking',    updateTimeDisplay);
+      wavesurfer.on('timeupdate', updateTimeDisplay);
+      wavesurfer.on('play',  () => $('#playPause').text('⏸ Pause'));
+      wavesurfer.on('pause', () => $('#playPause').text('▶ Play'));
+      wavesurfer.on('finish', () => exitSegmentMode());
+      wavesurfer.on('interaction', exitSegmentMode);
+
+      $('#playPause').on('click', () => {
+        if (wavesurfer.isPlaying()) wavesurfer.pause();
+        else { exitSegmentMode(); wavesurfer.play(); }
+      });
+
+      $(document).on('keydown', (e) => {
+        if (e.code !== 'Space') return;
+        const t = e.target;
+        if (t.matches && t.matches('input, textarea, select, [contenteditable]')) return;
+        e.preventDefault();
+        $('#playPause').trigger('click');
+      });
+
+      wavesurfer.on('ready', () => {
+        audioDuration = wavesurfer.getDuration();
+        initialZoom = Math.round($('#waveform').width() / audioDuration);
+        $('#zoomSlider').attr({ min: initialZoom, value: initialZoom });
+        $('#zoomLabel').text(initialZoom + ' px/s');
+        wavesurferReady = true;
+        drawAllRegions();
+        updateTimeDisplay();
+      });
+
+      // Debounce zoom application — repositioning hundreds of regions on
+      // every slider tick is slow. Update the label live, but apply the
+      // actual zoom 50ms after the user stops moving the slider.
+      let zoomTimer = null;
+      $('#zoomSlider').on('input', function () {
+        const val = parseInt(this.value);
+        $('#zoomLabel').text(val + ' px/s');
+        clearTimeout(zoomTimer);
+        zoomTimer = setTimeout(() => wavesurfer.zoom(val), 50);
+      });
+      $('#zoomReset').on('click', () => {
+        wavesurfer.zoom(initialZoom);
+        $('#zoomSlider').val(initialZoom);
+        $('#zoomLabel').text(initialZoom + ' px/s');
+      });
+
+      $('#overridesReset').on('click', () => {
+        const n = Object.keys(overrides).length;
+        if (n === 0) return;
+        if (!confirm(`Clear all ${n} manual boundary adjustments for this recording?`)) return;
+        // For each region: restore its bounds to the raw pipeline values
+        // and demote its colour to untouched. Don't remove any regions —
+        // they remain part of the always-drawn inventory.
+        for (const [idx, region] of regionsByIndex.entries()) {
+          const u = utterances[idx];
+          if (region && typeof region.setOptions === 'function') {
+            try { region.setOptions({ start: u.start, end: u.end }); }
+            catch (e) {}
+          }
+          if (region && idx !== activeIndex) {
+            setRegionColor(region, COLOR_UNTOUCHED);
+          }
+        }
+        overrides = {};
+        saveOverrides();
+        $('#utteranceTable tbody tr').removeClass('has-override');
+      });
+
+      $('#downloadJson').on('click', () => downloadUtterances());
+
+      fetch(utterancesUrl)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${utterancesUrl}`); return r.json(); })
+        .then(data => {
+          utterances = data;
+          const nRomanised = utterances.filter(u =>
+            u.text_romanised && typeof u.text_romanised === 'string' && u.text_romanised.trim()
+              && u.text_romanised.trim() !== (u.text || u.sentence || '').trim()
+          ).length;
+          let meta = `recording: ${recordingUrl}  ·  utterances: ${utterancesUrl}  ·  ${utterances.length} utterances`;
+          if (nRomanised > 0) meta += `  ·  ${nRomanised} romanised`;
+          $('#meta').text(meta);
+          renderDistribution(utterances);
+          buildTable();
+          utterancesLoaded = true;
+          drawAllRegions();
+        })
+        .catch(err => { $('#error').show().text('Failed to load utterances: ' + err.message); });
+    });
+
+    function downloadUtterances() {
+      const reviewed = utterances.map((u, i) => {
+        const ov = overrides[i] || null;
+        return { ...u, start_adj: ov ? ov.start : null, end_adj: ov ? ov.end : null };
+      });
+      const nReviewed = Object.keys(overrides).length;
+      const payload = {
+        meta: {
+          recording: recordingUrl, utterances: utterancesUrl,
+          n_utterances: utterances.length, n_reviewed: nReviewed,
+          exported_at: new Date().toISOString(),
+        },
+        utterances: reviewed,
+      };
+      const srcName = utterancesUrl.split('/').pop() || 'utterances.json';
+      const downloadName = srcName.replace(/\.json$/, '_reviewed.json');
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = downloadName;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function buildTable() {
+      dataTable = $('#utteranceTable').DataTable({
+        paging: false,
+        data: utterances,
+        columns: [
+          { data: null, className: 'num', render: (d, t, r, m) => m.row + 1 },
+          { data: null, orderable: false, searchable: false,
+            render: row => `<button class="play-btn" type="button">▶</button><button class="reset-btn" type="button" title="Reset to default boundaries">×</button>` },
+          { data: 'start', className: 'num', render: v => v.toFixed(3) },
+          { data: 'end',   className: 'num', render: v => v.toFixed(3) },
+          { data: null, className: 'num', render: row => (row.end - row.start).toFixed(2) },
+          { data: null, orderable: false, render: renderUtterance },
+        ],
+        createdRow: function (row, data, dataIndex) {
+          $(row).data('index', dataIndex);
+          if (overrides[dataIndex]) $(row).addClass('has-override');
+          $(row).find('.play-btn').on('click', function (e) {
+            e.stopPropagation();
+            const bounds = getEffectiveBounds(data, dataIndex);
+            // Don't change zoom — the user picks a zoom level and we keep
+            // it. playSegment handles scrolling the region into view.
+            playSegment(bounds.start, bounds.end, row, dataIndex);
+          });
+          $(row).find('.reset-btn').on('click', function (e) {
+            e.stopPropagation();
+            clearOverride(dataIndex);
+            $(row).removeClass('has-override');
+            // Reset the region to the raw pipeline bounds and demote its
+            // colour to untouched. Don't remove it — every utterance keeps
+            // a region for the page lifetime.
+            const region = regionsByIndex.get(dataIndex);
+            if (region) {
+              const u = utterances[dataIndex];
+              if (typeof region.setOptions === 'function') {
+                try { region.setOptions({ start: u.start, end: u.end }); }
+                catch (e) {}
+              }
+              if (dataIndex !== activeIndex) {
+                setRegionColor(region, COLOR_UNTOUCHED);
+              }
+            }
+          });
+        },
+      });
+    }
+  </script>
+</body>
+</html>

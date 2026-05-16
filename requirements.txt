@@ -1,0 +1,9 @@
+torchcodec==0.12.0
+soundfile
+silero-vad
+ctc-forced-aligner @ git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
+uroman
+google-genai
+numpy
+jupyterlab
+ipywidgets

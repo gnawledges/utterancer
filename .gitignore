@@ -1,0 +1,5 @@
+.cache
+*.flac
+.ipynb_checkpoints
+.env
+.Trash-0
