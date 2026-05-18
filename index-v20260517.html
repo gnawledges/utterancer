@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Utterancer — Handout (May 17, 2026)</title>
+  <meta name="description" content="Handout: pipeline overview and per-stage data dumps" />
+
+  <style>
+    :root {
+      --ink:        #1f2328;
+      --ink-soft:   #57606a;
+      --ink-faint:  #6e7781;
+      --rule:       #d0d7de;
+      --rule-soft:  #eaeef2;
+      --accent:     #0969da;       /* GitHub-blue, neutral CS-engineering vibe */
+      --bg:         #ffffff;
+      --code-bg:    #f6f8fa;
+      --measure:    760px;
+      --font-sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    "Helvetica Neue", Arial, "Apple Color Emoji",
+                    "Segoe UI Emoji", sans-serif;
+      --font-mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                    "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--bg); color: var(--ink); }
+    body {
+      font-family: var(--font-sans);
+      font-size: 17px;
+      line-height: 1.65;
+      max-width: var(--measure);
+      margin: 0 auto;
+      padding: 2.5em 1.5em 5em;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ── Post head ───────────────────────────────────────────────────────── */
+    header.post-head { margin-bottom: 2.5em; }
+    header.post-head h1 {
+      font-size: 2em;
+      line-height: 1.2;
+      margin: 0 0 0.3em;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+    }
+    header.post-head .subtitle {
+      color: var(--ink-soft);
+      font-size: 1.05em;
+      margin: 0 0 1em;
+      line-height: 1.5;
+    }
+    header.post-head .meta {
+      font-size: 0.85em;
+      color: var(--ink-faint);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1em;
+    }
+    header.post-head .meta a { color: var(--ink-faint); text-decoration: none; }
+    header.post-head .meta a:hover { color: var(--accent); }
+
+    /* ── TL;DR ──────────────────────────────────────────────────────────── */
+    .tldr {
+      background: var(--code-bg);
+      border: 1px solid var(--rule-soft);
+      border-radius: 6px;
+      padding: 1em 1.25em;
+      margin: 0 0 3em;
+      font-size: 0.95em;
+      color: var(--ink-soft);
+    }
+    .tldr h2 {
+      font-size: 0.75em;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      margin: 0 0 0.5em;
+    }
+    .tldr p { margin: 0.4em 0; }
+
+    /* ── Body ───────────────────────────────────────────────────────────── */
+    h2 {
+      font-size: 1.4em;
+      margin: 2.5em 0 0.5em;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    h3 {
+      font-size: 1.1em;
+      margin: 1.8em 0 0.3em;
+      font-weight: 600;
+    }
+    p, li { margin: 0.75em 0; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    code, kbd, samp {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: var(--code-bg);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 1em 1.15em;
+      overflow-x: auto;
+      border-radius: 6px;
+      font-size: 0.85em;
+      line-height: 1.55;
+      border: 1px solid var(--rule-soft);
+    }
+    pre code { background: none; padding: 0; font-size: inherit; }
+
+    /* ── Mermaid: break out of body measure ──────────────────────────────── */
+    pre.mermaid {
+      /* Strip inherited code-block chrome — Mermaid renders an SVG, not code. */
+      background: transparent;
+      border: none;
+      padding: 0;
+      /* Centered breakout up to 1100px, capped at 95vw on narrow viewports. */
+      width: min(95vw, 1100px);
+      position: relative;
+      left: 50%;
+      transform: translateX(-50%);
+      margin: 2em 0;
+    }
+
+    blockquote {
+      border-left: 3px solid var(--rule);
+      margin: 1.5em 0;
+      padding: 0.2em 0 0.2em 1em;
+      color: var(--ink-soft);
+    }
+
+    figure { margin: 2em 0; }
+    figure img { max-width: 100%; display: block; }
+    figcaption {
+      font-size: 0.85em;
+      color: var(--ink-faint);
+      margin-top: 0.6em;
+      line-height: 1.5;
+    }
+
+    aside.note {
+      font-size: 0.93em;
+      color: var(--ink-soft);
+      border-left: 3px solid var(--accent);
+      background: var(--code-bg);
+      padding: 0.75em 1em;
+      margin: 1.5em 0;
+      border-radius: 0 4px 4px 0;
+    }
+
+    table {
+      border-collapse: separate;
+      border-spacing: 0;
+      width: 100%;
+      margin: 1.5em 0;
+      font-size: 0.92em;
+      background: var(--code-bg);
+      border: 1px solid var(--rule-soft);
+      border-radius: 6px;
+      overflow: hidden;          /* clips internal borders at the radius */
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6em 0.9em;
+      border-bottom: 1px solid var(--rule-soft);
+      vertical-align: top;
+    }
+    th { font-weight: 600; border-bottom: 1px solid var(--rule); }
+    tr:last-child td, tr:last-child th { border-bottom: none; }
+    tr.mid td { vertical-align: middle; }
+
+    /* Opt-in breakout: tables wider than the text column. Same centring trick
+       as pre.mermaid above. */
+    table.wide {
+      width: min(95vw, 1100px);
+      position: relative;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    /* Same breakout for screenshots/images. */
+    img.wide {
+      display: block;
+      width: min(95vw, 1100px);
+      height: auto;
+      position: relative;
+      left: 50%;
+      transform: translateX(-50%);
+      margin: 2em 0;
+    }
+
+    hr { border: none; border-top: 1px solid var(--rule-soft); margin: 3em 0; }
+
+    footer.site {
+      margin-top: 4em;
+      padding-top: 1.5em;
+      border-top: 1px solid var(--rule-soft);
+      font-size: 0.85em;
+      color: var(--ink-faint);
+      display: flex;
+      justify-content: space-between;
+      gap: 1em;
+      flex-wrap: wrap;
+    }
+    footer.site a { color: var(--ink-faint); text-decoration: none; }
+    footer.site a:hover { color: var(--accent); }
+
+    @media print {
+      body { font-size: 11pt; max-width: none; margin: 0; }
+      footer.site { display: none; }
+      a { color: inherit; text-decoration: none; }
+      pre, code { background: none; border: 1px solid var(--rule); }
+    }
+  </style>
+</head>
+
+<body>
+
+<header class="post-head">
+  <h1>Utterancer</h1>
+  <p class="subtitle">Utterance-length clip generation from monologic long-form recordings</p>
+  <div class="meta">
+    <span>Nay San</span>
+    <span>May 16 2026</span>
+  </div>
+</header>
+
+<h2>The proof-of-concept recipe (May 17, 2026)</h2>
+
+<p>
+This page is a skeleton with diagrams/tables pending a full write-up.
+</p>
+
+<pre class="mermaid">
+flowchart LR
+    A["Recording<br/><small>long-form audio</small>"] --> V["VAD<br/><small>Silero, fragment intervals</small>"]
+    V --> B["Chapters<br/><small>5–10 min</small>"]
+
+    subgraph perchapter ["per chapter"]
+      direction LR
+      C["ASR<br/><small>LLM, multimodal</small>"]
+    end
+
+    B --> C
+    C --> D["Stitched transcript<br/><small>full recording</small>"]
+    D --> E["Forced alignment<br/><small>word-level timestamps</small>"]
+
+    subgraph webinterface ["Web Interface"]
+      direction LR
+      F["Human Annotation<br/><small>segment and transcribe</small>"]
+    end
+
+    E --> F
+    F --> G["Utterances<br/><small>2–15 s</small>"]
+
+    style webinterface fill:#f0f7ff,stroke:#4a90e2,stroke-width:2px
+</pre>
+
+<p>
+Stages: VAD splits the recording at acoustic silences; the chapteriser
+recursively bisects on the longest pauses to produce 5–10 minute chunks;
+ASR runs per chapter (large enough for context, short enough to fit
+comfortably); the chapter transcripts are stitched and the full recording
+is forced-aligned for word-level timestamps; the human annotator drives
+the final segmentation and inline transcription through the web interface
+<a href="https://github.com/gnawledges/utterancer/blob/main/utterancer-e2e-standalone-dev.ipynb" target="_blank">code</a> lives in the <a href="https://github.com/gnawledges/utterancer" target="_blank">gnawledges/utterancer</a> repository.
+</p>
+
+<h3>Recordings</h3>
+
+<p>
+Both recordings are public domain materials that are longer than 10 minutes, but vary across several different dimensions: speaker gender, language, prosodic style, etc.
+As can be heard from the Obama sample ("despite [pause] the real and troubling [pause] areas where freedom appears in retreat"), the Obama recording provides plenty of spots where the utterance contains several long pauses.
+The Ekka sample is much more evenly paced in the genre of an audiobook recording.
+</p>
+
+<table class="wide">
+  <thead>
+    <tr><th></th><th>Obama - UNGA71</th><th>Ekka - Do Sakhiyan, Ch. 9</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Speaker (Gender)</td><td>Barack Obama (M)</td><td>Sonali Ekka (F)</td></tr>
+    <tr><td>Language</td><td>English</td><td>Hindi</td></tr>
+    <tr><td>Language script</td><td>Latin</td><td>Devanagari</td></tr>
+    <tr><td>Genre</td><td>political oratory</td><td>literary narrative + dialogue</td></tr>
+    <tr><td>Prosodic style</td><td>dramatic emphasis pauses</td><td>compressed clause pauses</td></tr>
+    <tr><td>Source</td><td><a href="https://obamawhitehouse.archives.gov/photos-and-video/video/2016/09/20/president-obama-speaks-general-assembly" target="_blank">Obama White House Archives</a></td><td><a href="https://librivox.org/do-sakhiyan-by-premchand/" target="_blank">LibriVox</a></td></tr>
+    <tr class="mid"><td>Audio sample</td><td><audio src="docs/obama-sample.wav" controls></audio></td><td><audio src="docs/ekka-sample.wav" controls></audio></td></tr>
+    <tr><td>Recording duration</td><td>47 mins</td><td>27 mins</td></tr>
+  </tbody>
+</table>
+
+
+<h3>Chapterisation</h3>
+
+As can be seen from the fragment count (Obama = 795; Ekka = 587), the VAD stage that relies only on acoustics produces many utterance fragments that we have to try and merge.
+The between- and within-utterance pause durations don't cleanly separate into a bimodal distribution.
+That said it is more likely for the <i>longest</i> of the pauses to be between utterances than within.
+Based on this tendency, we recursively bisect the longest chapters at their longest pause until every chapter is under 10 minutes.
+<table class="wide">
+  <thead>
+    <tr><th>Obama - UNGA71</th><th>Ekka - Do Sakhiyan, Ch. 9</th></tr>
+  </thead>
+  <tbody>
+    <tr class="mid"><td>
+<pre>
+Recording: 47.8 min
+Fragments: 795
+Chapters:  7
+
+ch  range            dur
+ 0   0:00– 3:35     3.6 min
+ 1   3:35–10:21     6.8 min
+ 2  10:21–18:35     8.2 min
+ 3  18:35–24:03     5.5 min
+ 4  24:03–33:06     9.1 min
+ 5  33:06–41:30     8.4 min
+ 6  41:30–47:48     6.3 min
+</pre>
+    </td><td>
+<pre>
+Recording 27.4 min
+Fragments: 587
+Chapters: 5
+
+ch  range            dur
+ 0   0:00– 8:20     8.3 min
+ 1   8:20–14:22     6.0 min
+ 2  14:22–18:28     4.1 min
+ 3  18:28–25:52     7.4 min
+ 4  25:52–27:23     1.5 min
+
+
+</pre>
+    </td></tr>
+  </tbody>
+</table>
+
+Note we're not too worried about uneven breaks: given the 8.4 hour advertised context there's no issue of load balancing (see recording-initial/-final chapters of Obama being 3.6 minutes or Ekka being 1.5 minutes).
+There is a merge pass to combine any chapter less than a minute back with its shortest neighbour.
+Even left at 1.5 minutes, however, this still sets up the ASR with enough context than the shortest fragments coming out of a bottom-up approach (e.g. ~5-10 second fragments submitted to ASR without surrounding context).
+Further, from a cost perspective, the medium-length chapters allow for fewer job submissions, reducing the instruction prompt repetition (can add up when the prompt is massive!), also allowing for more specificity within each prompt.
+
+<h3>Transcription with punctuation</h3>
+
+The prompts are language-specific and specify script-specific punctuation, e.g. Latin <code>.</code> vs. Devanagari <code>।</code>, which we'll use as hints during the merge step.
+As the English text transcript already shows with <code>Mr<span style="color:red">.</span> President.</code>, the punctuation should only be taken as hints so the pause durations are very still relevant!
+Although this is a hint that the prompt should demonstrate verbalisations such as <code>Mr. -> Mister</code> because the forced alignment with work better on verbalised forms.
+
+<table class="wide">
+  <thead>
+    <tr><th>English prompt</th><th>Hindi prompt</th></tr>
+  </thead>
+  <tbody>
+    <tr class="mid"><td>
+<pre>
+Transcribe this audio verbatim. Output rules:
+
+- Mixed case (sentence-initial capitalisation, proper nouns, etc.).
+- Use periods to end declarative sentences.
+- Use question marks for questions.
+- Use exclamation marks for emphatic sentences.
+- DO NOT use commas, semicolons, em-dashes, parentheses, or any other punctuation.
+  Only the three sentence-end marks above are permitted.
+- Numbers spelled out as words: "twenty seven" not "27".
+- If unsure of a word, omit it. Do not guess.
+
+Output only the transcript. No preamble, no commentary.
+</pre>
+    </td><td>
+<pre>
+इस ऑडियो का शब्दशः लिप्यांतरण करें। नियम:
+
+- सामान्य देवनागरी लिपि में लिखें।
+- घोषणात्मक वाक्यों के अंत में पूर्ण विराम (।) का प्रयोग करें।
+- प्रश्नवाचक वाक्यों के अंत में अंग्रेज़ी प्रश्न चिह्न (?) का प्रयोग करें।
+- विस्मयादिबोधक वाक्यों के अंत में अंग्रेज़ी विस्मयादिबोधक चिह्न (!) का प्रयोग करें।
+- अल्पविराम (,), अर्धविराम (;), डैश (—), कोष्ठक, या कोई अन्य विराम चिह्न का प्रयोग न करें।
+  केवल ऊपर दिए गए तीन वाक्यांत चिह्न ही मान्य हैं।
+- संख्याओं को शब्दों में लिखें: "सत्ताईस" लिखें, "27" नहीं।
+- यदि किसी शब्द के बारे में सुनिश्चित न हों, तो उसे छोड़ दें। अनुमान न लगाएं।
+
+केवल लिप्यांतरण ही दें। कोई प्रस्तावना या टिप्पणी नहीं।
+</pre>
+    </td></tr>
+  </tbody>
+  <thead>
+    <tr><th>English transcript</th><th>Hindi transcript</th></tr>
+  </thead>
+  <tbody>
+    <tr class="mid"><td>
+<pre>
+Mr. President.
+Mr. Secretary General.
+Fellow delegates.
+Ladies and gentlemen.
+As I address this hall as president for the final time.
+Let me recount the progress that we've made these last eight years.
+From the depths of the greatest financial crisis of our time we coordinated
+  our response to avoid further catastrophe and return the global economy to growth.
+We've taken away terrorist safe havens.
+Strengthened the nonproliferation regime.
+Resolved the Iranian nuclear issue through diplomacy.
+</pre>
+    </td><td>
+<pre>
+प्रेमचंद द्वारा रचित दो सखियां का खंड नौ।
+यह लिब्रे वक्स अभिलेखन सार्वजनिक क्षेत्र में उपलब्ध है।
+देहली एक जनवरी उन्नीस सौ छब्बीस।
+प्यारी बहन तुम्हारे प्रथम मिलन की कुतूहलमय कथा पढ़कर चित्त प्रसन्न हो गया।
+मुझे तुम्हारे ऊपर हसद हो रहा है।
+मैंने समझा था तुम्हें मुझ पर हसद होगा पर क्रिया उल्टी हो गई।
+तुम्हें चारों ओर हरियाली ही नजर आती है।
+मैं जिधर नजर डालती हूं सूखे रेत और नग्न टीलों के सिवा और कुछ नहीं।
+खैर अब कुछ मेरा वृत्तांत सुनो।
+अब जिगर थाम के बैठो मेरी बारी आई।
+
+</pre>
+    </td></tr>
+</table>
+
+<h3>Word-level timestamps with forced alignment</h3>
+
+For forced alignment, we use the fairseq MMS model via Mahmoud Ashraf's <code><a href="https://github.com/MahmoudAshraf97/ctc-forced-aligner" target="_blank">ctc-forced-aligner</a></code> package (which saves a whole lot of headaches dealing with <code>fairseq</code>).
+To get multi-lingual coverage across many languages, the aligner operates on Romanised representations of the input text (derived via uroman).
+While it strips away punctuation internally, the returned output with word-level timestamps on the original script thankfully retains them.
+
+<table class="wide">
+  <thead>
+    <tr><th>English word alignments</th><th>Hindi word alignments</th></tr>
+  </thead>
+  <tbody>
+    <tr class="mid"><td>
+<pre>
+range      word          aligned
+0.88–1.08  Mr<span style="color:red">.</span>           mr
+1.14–1.60  President<span style="color:red">.</span>    president
+3.12–3.30  Mr<span style="color:red">.</span>           mr
+3.36–3.72  Secretary     secretary
+3.80–4.10  General<span style="color:red">.</span>      general
+5.68–5.88  Fellow        fellow
+5.94–6.44  delegates<span style="color:red">.</span>    delegates
+7.94–8.24  Ladies        ladies
+8.30–8.36  and           and
+8.42–8.76  gentlemen<span style="color:red">.</span>    gentlemen
+</pre>
+    </td><td>
+<pre>
+range      word         aligned
+0.64–1.12  प्रेमचंद         premacamd
+1.22–1.48  द्वारा          dvaaraa
+1.56–1.88  रचित         racit
+2.18–2.24  दो           do
+2.38–2.80  सखियां        sakhiyaam
+2.84–2.94  का          kaa
+3.02–3.26  खंड          khamdd
+3.36–3.54  नौ<span style="color:red">।</span>          nau
+4.34–4.48  यह          yah
+4.54–4.78  लिब्रे         libre
+</pre>
+    </td></tr>
+  </tbody>
+</table>
+
+
+<footer class="site">
+  <span>© 2026 Nay San</span>
+  <span><a href="utterancer-e2e-standalone-dev.ipynb">notebook</a> · <a href="inspect.html">inspector</a></span>
+</footer>
+
+<script type="module"> import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.15.0/+esm' </script>
+
+</body>
+</html>
