@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Utterance annotation interface</title>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://unpkg.com/wavesurfer.js@7"></script>
+  <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
+
+  <style>
+    /* Minimal light theme. Plain background, system font, one accent
+       colour. Behaviour-first; visual chrome kept out of the way. */
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body { font-family: system-ui, -apple-system, sans-serif; color: #222; background: #fff; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* Menubar — macOS-style. Triggers open a dropdown below; clicking
+       elsewhere closes any open menu. Visual style is light: thin grey
+       bar, system font, blue highlight on hover/open. */
+    #topbar.menubar { display: flex; align-items: stretch; height: 26px; border-bottom: 1px solid #ddd; background: #fafafa; font-size: 0.88em; flex: 0 0 auto; }
+    .menu { position: relative; }
+    .menu-trigger { height: 100%; padding: 0 14px; background: transparent; border: none; cursor: pointer; color: #333; font: inherit; }
+    .menu-trigger:hover, .menu.open .menu-trigger { background: #4a90e2; color: #fff; }
+    .menu-dropdown { display: none; position: absolute; top: 100%; left: 0; min-width: 200px; max-width: 360px; background: #fff; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); padding: 4px 0; z-index: 100; }
+    .menu.open .menu-dropdown { display: block; }
+    .menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 14px; cursor: pointer; background: transparent; border: none; width: 100%; text-align: left; font: inherit; color: #333; box-sizing: border-box; white-space: nowrap; }
+    .menu-item:hover { background: #f0f0f0; }
+    .menu-item.current { font-weight: 600; }
+    .menu-item.current::before { content: '✓'; color: #4a90e2; margin-right: 4px; }
+    .menu-divider { height: 1px; background: #e6e6e6; margin: 4px 0; }
+    .menu-label { padding: 6px 14px 2px; font-size: 0.78em; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
+    #error { color: #c00; padding: 1em; }
+
+    /* Shared 880px column for waveform + transport. Transcript is handled
+       specially below: its outer #transcript is full-width (scroll
+       context, no horizontal clipping near the column edge), while a
+       `.transcript-inner` wrapper inside it carries the 880px constraint. */
+    #waveform, #transport {
+      width: 100%;
+      max-width: 880px;
+      margin-left: auto;
+      margin-right: auto;
+      box-sizing: border-box;
+    }
+
+    /* #transcript spans the full body width so its overflow-y scrolling
+       doesn't clip the timing column's absolute box (which extends LEFT
+       past the centered text column). The visible text column constraint
+       lives on the .transcript-inner child below. */
+    #transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; line-height: 1.7; font-size: 1.05em; color: #222; }
+    .transcript-inner { max-width: 880px; margin: 0 auto; padding: 32px 20px; box-sizing: border-box; }
+
+    /* Two-column paragraph: a fixed-width gutter (left) holding the line's
+       play / merge buttons, and a text content area (right) holding the
+       words. The gutter is always the same width even when buttons are
+       hidden, so text in every paragraph aligns to a single left margin
+       and wraps within the right column instead of indenting under the +.
+       align-items: center vertically centres the gutter/timing against the
+       text — pleasant for short single-line utterances; for multi-line
+       wraps the timing floats at vertical mid-height. */
+    .paragraph { position: relative; display: flex; align-items: center; gap: 8px; margin: 0 0 12px; outline: none; border-radius: 3px; padding: 2px 4px; transition: background 0.12s; }
+    .paragraph.playing { background: rgba(255, 245, 157, 0.4); }
+    .paragraph.flash { animation: flashPara 600ms ease-out; }
+    @keyframes flashPara {
+      0%   { background: rgba(200, 245, 200, 0.6); }
+      100% { background: transparent; }
+    }
+    /* Timing column — single row, right-aligned. Time-range on the left,
+       pause-before on the right so pause sits adjacent to the gutter (and
+       thus the + button). The column always reserves 200px so toggling
+       any sub-element on or off does not shift the rest of the layout.
+       Per-element visibility is driven by independent body-class toggles:
+       `.show-times` for the start–end range, `.show-pauses` for the pause-
+       before badge. Defaults are off — opt-in display only. */
+    /* Timing parked absolutely to the LEFT of the shared 880px column —
+       sits in the body-level whitespace beyond the column edge. Taking it
+       out of the flex flow lets `.text-content` expand to the full column
+       width regardless of whether timing is visible. The toggle rules
+       (visibility on `.time-range` / `.pause-marker`) still work in place. */
+    .paragraph .timing { position: absolute; right: 100%; top: 0; bottom: 0; width: 190px; padding-right: 10px; display: flex; flex-direction: row; justify-content: space-between; align-items: center; gap: 10px; font-family: ui-monospace, Menlo, monospace; font-size: 0.8em; color: #888; user-select: none; }
+    /* On viewports narrower than the column + room-for-timing-on-the-side,
+       drop the timing entirely rather than overflowing off the viewport. */
+    @media (max-width: 1280px) { .paragraph .timing { display: none; } }
+    .paragraph .timing .time-range { visibility: hidden; }
+    .paragraph .timing .pause-marker { color: #2c8a3f; font-weight: 600; visibility: hidden; }
+    body.show-times  .paragraph .timing .time-range { visibility: visible; }
+    body.show-pauses .paragraph .timing .pause-marker:not(.hidden) { visibility: visible; }
+    /* Gutter — horizontal so + and ▶ share one line. Annotators run on
+       desktop; the extra horizontal footprint is fine. */
+    .paragraph .gutter { flex: 0 0 auto; display: flex; flex-direction: row; gap: 4px; align-items: center; }
+    .paragraph .text-content { flex: 1 1 auto; min-width: 0; }
+
+    .word { cursor: pointer; border-radius: 2px; padding: 1px 0; }
+    .word:hover { background: #eef5ff; }
+    .word.current { background: #fff59d; }
+    .word.no-align { color: #b85a2c; }   /* edited / no timestamp */
+
+    /* Click-mode affordances. .gap is the inter-word click target that on
+       hover reveals a vertical "cut here" bar; .merge-btn sits at the start
+       of each paragraph (except the first) to fold it into the previous. */
+    .gap { display: inline; padding: 0 2px; border-radius: 2px; cursor: pointer; position: relative; }
+    .gap:hover { background: rgba(74, 144, 226, 0.18); }
+    .gap:hover::before {
+      content: '';
+      position: absolute;
+      left: calc(50% - 1px); top: 2px;
+      width: 2px; height: calc(100% - 4px);
+      background: #4a90e2;
+      border-radius: 1px;
+      pointer-events: none;
+    }
+    /* Long-pause marker — used when a paragraph spans an acoustic silence
+       of > PAUSE_THRESHOLD_SEC. Replaces the plain inter-word space with a
+       visible <pause> token. Still a .gap (click splits the paragraph
+       there, removing the pause naturally). */
+    .gap.long-pause { padding: 0 6px; margin: 0 2px; font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; font-style: italic; color: #b85a2c; background: rgba(184, 90, 44, 0.06); border-radius: 3px; }
+    .gap.long-pause:hover { background: rgba(184, 90, 44, 0.22); }
+    .gap.long-pause:hover::before { background: #b85a2c; }
+    .merge-btn, .play-btn-para {
+      width: 24px; height: 24px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 0.9em;
+      line-height: 20px;
+      text-align: center;
+      cursor: pointer;
+      background: #fff;
+      flex: 0 0 auto;
+    }
+    .merge-btn { border: 1px solid #2c8a3f; color: #2c8a3f; }
+    .merge-btn:hover { background: #2c8a3f; color: #fff; }
+    /* Hidden placeholder (first paragraph) keeps the gutter width consistent
+       so the play button stays in the same slot across all paragraphs. */
+    .merge-btn.hidden { visibility: hidden; pointer-events: none; }
+    /* Locked merge button — out-of-turn rows. Visually muted, no hover
+       affordance. The native `disabled` attribute is also set on render. */
+    .merge-btn.locked, .merge-btn[disabled] { border-color: #ddd; color: #bbb; background: #fafafa; cursor: not-allowed; }
+    .merge-btn.locked:hover, .merge-btn[disabled]:hover { background: #fafafa; color: #bbb; }
+    /* Split-locked rows — gap-clicks are no-ops, no hover bar appears.
+       Word clicks are also disabled in JS, so signal it visually too. */
+    .paragraph.split-locked .gap { cursor: default; }
+    .paragraph.split-locked .gap:hover { background: transparent; }
+    .paragraph.split-locked .gap:hover::before { display: none; }
+    .paragraph.split-locked .gap.long-pause { cursor: default; }
+    .paragraph.split-locked .gap.long-pause:hover { background: rgba(184, 90, 44, 0.06); }
+    .paragraph.split-locked .word { cursor: default; }
+    .paragraph.split-locked .word:hover { background: transparent; }
+    .play-btn-para { border: 1px solid #4a90e2; color: #4a90e2; }
+    .play-btn-para:hover { background: #4a90e2; color: #fff; }
+    /* Right-gutter pill buttons (work: → Stage, staged: ✕ Unstage). Same
+       min-width so the right edge of every row lines up. */
+    .gutter-right { flex: 0 0 auto; display: flex; align-items: center; padding-left: 6px; }
+    .stage-btn, .unstage-btn-inline { min-width: 88px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 0.85em; line-height: 20px; cursor: pointer; background: #fff; font-family: inherit; }
+    .stage-btn { border: 1px solid #2c8a3f; color: #2c8a3f; }
+    .stage-btn:hover { background: #2c8a3f; color: #fff; }
+    /* Locked stage button — out-of-turn rows beyond the current decision.
+       Visually muted, no hover affordance, no pointer cursor. The native
+       :disabled attribute is also set so clicks don't even fire. */
+    .stage-btn.locked, .stage-btn[disabled] { border-color: #ddd; color: #bbb; background: #fafafa; cursor: not-allowed; }
+    .stage-btn.locked:hover, .stage-btn[disabled]:hover { background: #fafafa; color: #bbb; }
+    .unstage-btn-inline { border: 1px solid #b85a2c; color: #b85a2c; }
+    .unstage-btn-inline:hover { background: #b85a2c; color: #fff; }
+
+    /* Staged row variant: same flex layout as work rows so timing + gutter
+       columns line up. The text-content slot holds a textarea instead of
+       word spans. */
+    .paragraph.staged .text-content.staged-content { padding: 2px 0; }
+    .staged-text { width: 100%; min-height: 44px; resize: vertical; padding: 6px 8px; box-sizing: border-box; font-family: ui-monospace, Menlo, monospace; font-size: 0.95em; line-height: 1.45; border: 1px solid #c8d8cc; border-radius: 3px; background: #fff; }
+    .staged-text:focus { outline: none; border-color: #2c8a3f; box-shadow: 0 0 0 2px rgba(44, 138, 63, 0.15); }
+    .staged-text.edited { background: #fffce8; }
+    .paragraph.staged.playing { background: rgba(255, 235, 59, 0.18); }
+    .paragraph.flash { animation: flashRow 600ms ease-out; }
+    @keyframes flashRow { 0% { background: rgba(44, 138, 63, 0.20); } 100% { background: transparent; } }
+
+    /* Row filter — three states driven by body class. Default (no class)
+       shows everything; filter-unstaged hides staged rows; filter-staged
+       hides work rows. No DOM rebuild on filter change — pure CSS swap. */
+    body.filter-unstaged .paragraph.staged { display: none; }
+    body.filter-staged   .paragraph:not(.staged) { display: none; }
+
+    /* Transport bar — sits just below the waveform at the top of the page
+       (Praat/ELAN layout — audio controls live with the audio strip). */
+    #transport { display: flex; align-items: center; gap: 14px; padding: 6px 16px; border-bottom: 1px solid #eee; flex: 0 0 auto; font-size: 0.9em; }
+    #transport button { padding: 4px 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 3px; background: #fff; font-size: 0.95em; min-width: 50px; }
+    #transport button:hover { background: #f5f5f5; }
+    #transport .time { font-family: ui-monospace, Menlo, monospace; color: #555; }
+    #transport select { padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; background: #fff; font-size: 0.9em; }
+    #transport .spacer { flex: 1; }
+
+    /* Waveform strip — at the top of the page (Praat/ELAN style). Width
+       constraint comes from the shared-column rule above; only the height
+       and inner padding live here. The 20px inner padding matches the
+       transcript's so the waveform pixel x positions line up under the
+       transcript text x positions. */
+    #waveform { flex: 0 0 180px; padding: 0 20px; }
+    #waveform ::-webkit-scrollbar { height: 10px; }
+    #waveform ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 5px; }
+    /* Region content — wavesurfer v7 wraps the `content` string in a div
+       inside the region. Clip overflow so the label shows however much
+       fits at the current zoom; pointer-events:none keeps the underlying
+       region the click target. */
+    /* Wavesurfer v7 uses `part="region <id>"` on the region element (no
+       class attribute). The overflow rule keeps the colored region tidy
+       at its time-bounds. */
+    #waveform [part~="region"] { overflow: hidden; }
+  </style>
+</head>
+<body>
+  <!-- macOS-style menu bar. Menu triggers open dropdowns; click outside
+       closes them. View menu houses display toggles (Times, Pauses) and
+       the row filter (Utterances). Corpus menu items navigate. -->
+  <div id="topbar" class="menubar">
+    <div class="menu" id="viewMenu">
+      <button type="button" class="menu-trigger">View</button>
+      <div class="menu-dropdown">
+        <div class="menu-label">Timing</div>
+        <label class="menu-item"><input type="checkbox" id="showTimes"> View times</label>
+        <label class="menu-item"><input type="checkbox" id="showPauses"> View pauses</label>
+        <div class="menu-divider"></div>
+        <div class="menu-label">Utterances</div>
+        <label class="menu-item"><input type="radio" name="filter" value="all" checked> All</label>
+        <label class="menu-item"><input type="radio" name="filter" value="unstaged"> Unstaged</label>
+        <label class="menu-item"><input type="radio" name="filter" value="staged"> Staged</label>
+        <div class="menu-divider"></div>
+        <div class="menu-label">Corpus</div>
+        <div id="corpusOptions"></div>
+      </div>
+    </div>
+    <div class="menu" id="playbackMenu">
+      <button type="button" class="menu-trigger">Playback</button>
+      <div class="menu-dropdown">
+        <div class="menu-label">Speed</div>
+        <label class="menu-item"><input type="radio" name="speed" value="0.75"> 0.75×</label>
+        <label class="menu-item"><input type="radio" name="speed" value="1.0" checked> 1.0×</label>
+        <label class="menu-item"><input type="radio" name="speed" value="1.5"> 1.5×</label>
+        <label class="menu-item"><input type="radio" name="speed" value="2.0"> 2.0×</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Praat/ELAN-style placement: waveform + transport at the TOP. Keeps
+       the resize handles for staged regions close to the cursor when the
+       annotator is editing transcripts further down the page. -->
+  <div id="waveform"></div>
+
+  <div id="transport">
+    <button id="playPause" type="button" title="Play / Pause">▶</button>
+    <span class="time" id="timeDisplay">0:00.00 / 0:00.00</span>
+  </div>
+
+  <div id="transcript"><div class="transcript-inner">Loading…</div></div>
+  <div id="error" style="display:none"></div>
+
+  <script>
+    // ── Corpus picker (lifted from wizard-textarea.html) ─────────────────
+    const CORPORA = {
+      "eng_obama-unga71": {
+        recording: "data/eng_obama-unga71/20160920_POTUS_Opening_of_71st_Session_General_Assembly.opus",
+        words:     "data/eng_obama-unga71/20160920_POTUS_Opening_of_71st_Session_General_Assembly___words.json",
+        language:  "eng",
+      },
+      "hin_ekka-premchand-do-sakhiyan-ch9": {
+        recording: "data/hin_ekka-premchand-do-sakhiyan-ch9/dosakhiyan_09_premchand_128kb.opus",
+        words:     "data/hin_ekka-premchand-do-sakhiyan-ch9/dosakhiyan_09_premchand_128kb___words.json",
+        language:  "hin",
+      },
+    };
+    const DEFAULT_CORPUS_KEY = "eng_obama-unga71";
+
+    const params = new URLSearchParams(location.search);
+    let recordingUrl = params.get('recording');
+    let wordsUrl     = params.get('words');
+
+    if (!recordingUrl && !wordsUrl) {
+      const c = CORPORA[DEFAULT_CORPUS_KEY];
+      const next = new URLSearchParams({ recording: c.recording, words: c.words, language: c.language });
+      location.replace('?' + next.toString());
+      throw new Error('Redirecting to default corpus');
+    }
+    // Populate the View → Corpus section. One radio per corpus, labelled
+    // by language (English / Hindi / …). Selecting one navigates — full
+    // page reload. The currently-loaded corpus's radio starts checked.
+    const matchingKey = Object.keys(CORPORA).find(k =>
+      CORPORA[k].recording === recordingUrl && CORPORA[k].words === wordsUrl
+    );
+    const LANG_LABELS = { eng: 'English', hin: 'Hindi' };
+    const $corpusOptions = $('#corpusOptions');
+    for (const key of Object.keys(CORPORA)) {
+      const c = CORPORA[key];
+      const label = LANG_LABELS[c.language] || c.language;
+      const isCurrent = (key === matchingKey);
+      const $label = $('<label>').addClass('menu-item');
+      const $input = $('<input>')
+        .attr('type', 'radio')
+        .attr('name', 'corpus')
+        .attr('value', key);
+      if (isCurrent) $input.prop('checked', true);
+      $label.append($input).append(' ' + label);
+      $corpusOptions.append($label);
+    }
+    $corpusOptions.on('change', 'input[name="corpus"]', function () {
+      const c = CORPORA[this.value];
+      if (!c) return;
+      const next = new URLSearchParams({ recording: c.recording, words: c.words, language: c.language });
+      location.search = '?' + next.toString();
+    });
+
+    // Resolve language: URL param → matching corpus entry → 'eng' fallback.
+    // Used to pick a language-appropriate <pause> token (see below).
+    let language = params.get('language');
+    if (!language && matchingKey) language = CORPORA[matchingKey].language;
+    if (!language) language = 'eng';
+
+    // Pause tokens — auto-inserted between adjacent same-paragraph words
+    // whose acoustic gap exceeds PAUSE_THRESHOLD_SEC. Rendered as a click-
+    // to-split affordance with a language-specific label, so the annotator
+    // sees an explicit marker when a merge spans a long silence. Splitting
+    // the paragraph at that point removes the marker naturally — it's a
+    // property of "two same-paragraph adjacent words with gap > N", not
+    // stored state. Matches wizard-textarea's pause semantics.
+    const PAUSE_TEXT_BY_LANG = { eng: '<pause>', hin: '<विराम>' };
+    const PAUSE_TEXT = PAUSE_TEXT_BY_LANG[language] || PAUSE_TEXT_BY_LANG.eng;
+    const PAUSE_THRESHOLD_SEC = 2.0;
+    // Linear-flow constants. The annotator works top-to-bottom; the next
+    // line they need to decide on is the first not-yet-staged row in the
+    // unified list. Fade is aggressive — by ~6 rows below the focus, the
+    // opacity is at 0.5 to signal "look-ahead context only, not actionable
+    // yet". The top TWO unstaged rows are actionable for splits, only the
+    // top row is actionable for merge and stage.
+    const FADE_TO_HALF_OVER_ROWS = 6;
+    const SPLITTABLE_UNSTAGED_ROWS = 2;
+
+    // Phase-4-style boundary padding applied at stage time. Ports the
+    // wizard.html / utterancer notebook constants. Word-derived bounds
+    // tend to clip the first/last phoneme since MMS alignment edges are
+    // tight; padding 150ms on each side gives the staged audio more
+    // natural breathing room. Clamped to recording bounds and to whatever
+    // neighbours (working or staged) already occupy the adjacent time.
+    const STAGE_PAD_START_SEC = 0.150;
+    const STAGE_PAD_END_SEC   = 0.150;
+
+    // ── Paragraph chunking ───────────────────────────────────────────────
+    // Initial chunking from acoustic silence,
+    // but after the seed the source of truth becomes a `breakAfterWord` set
+    // — same model as wizard-textarea.html — so the annotator can split
+    // and merge boundaries by hand from there. Default 0.75s threshold
+    // matches the wizard's `GAP_MERGE_THRESHOLD_SEC` and chunks Obama well;
+    // Ekka's metronomic ~1s pauses will over-chunk, exposing the same
+    // language-dependence that motivated the wizard family.
+    const PARAGRAPH_GAP_SEC = 0.75;
+
+    function seedBreaksFromGaps() {
+      breakAfterWord = new Set();
+      for (let i = 0; i < words.length - 1; i++) {
+        const gap = words[i + 1].start - words[i].end;
+        if (gap >= PARAGRAPH_GAP_SEC) breakAfterWord.add(i);
+      }
+    }
+
+    function buildParagraphs() {
+      // Derive paragraph list from breakAfterWord. Each paragraph carries
+      // its words plus a `wordRefs` array with absoluteIdx metadata for
+      // downstream consumers (gap-click split data-after, merge target
+      // lookup).
+      const paras = [];
+      let cur = [];
+      let curStartIdx = 0;
+      function flush() {
+        if (!cur.length) return;
+        const wordRefs = cur.map((w, i) => ({
+          text: w.text, absoluteIdx: curStartIdx + i,
+        }));
+        const text = cur.map(w => w.text).join(' ');
+        paras.push({
+          words: cur, text, wordRefs,
+          start: cur[0].start, end: cur[cur.length - 1].end,
+        });
+        cur = [];
+      }
+      for (let i = 0; i < words.length; i++) {
+        // Staged words are out of the working list. Hard flush at the
+        // boundary so working paragraphs can't span a staged region.
+        if (stagedWordIndices.has(i)) {
+          flush();
+          continue;
+        }
+        if (!cur.length) curStartIdx = i;
+        // Tag each word with its absolute index so downstream rendering can
+        // read `.absoluteIdx` off `para.words[i]` directly. Without this tag
+        // the gap span's `data-after` came out as the string "undefined" and
+        // the click handler silently returned on the !isFinite guard.
+        cur.push({ ...words[i], absoluteIdx: i });
+        if (breakAfterWord.has(i) || i === words.length - 1) flush();
+      }
+      return paras;
+    }
+
+    // ── Time formatting ──────────────────────────────────────────────────
+    function formatTime(s) {
+      if (!Number.isFinite(s)) return '0:00.00';
+      const sign = s < 0 ? '-' : '';
+      s = Math.abs(s);
+      const m = Math.floor(s / 60);
+      const sec = s - m * 60;
+      return `${sign}${m}:${sec.toFixed(2).padStart(5, '0')}`;
+    }
+    // Track once the data is loaded; flips on whenever the recording's last
+    // word's `end` (or wavesurfer's audio duration) crosses 1 hour. Format
+    // adapts: under an hour we drop the `00h` prefix; over an hour we keep
+    // it for consistency across all timestamps in the same recording.
+    let isLongRecording = false;
+    function formatHMS(s) {
+      if (!Number.isFinite(s)) return isLongRecording ? '00h00m00s' : '00m00s';
+      s = Math.max(0, s);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = Math.floor(s % 60);
+      const pad = n => String(n).padStart(2, '0');
+      return isLongRecording
+        ? `${pad(h)}h${pad(m)}m${pad(sec)}s`
+        : `${pad(m)}m${pad(sec)}s`;
+    }
+    function formatPauseMs(s) {
+      if (!Number.isFinite(s) || s < 0) return '';
+      return `${Math.round(s * 1000)}ms`;
+    }
+
+    // ── State ────────────────────────────────────────────────────────────
+    let words = [];                  // raw from words.json
+    let breakAfterWord = new Set();  // indices where a paragraph ends after word i
+    let paragraphs = [];             // derived from breakAfterWord on each rebuild
+
+    // Staging state. Ported from wizard-textarea.html.
+    // `interiorBreaks` per record captures break positions inside the staged
+    // word range AT STAGE TIME so unstaging restores the exact pre-stage
+    // segmentation (NOT the original/machine state).
+    let stagedWordIndices = new Set();
+    let stagedRecords = [];
+    let stagedIdSeq = 0;
+    let wordSpans = [];              // DOM nodes indexed by absolute word idx
+    let currentWordIdx = null;       // word under the playhead
+    let wavesurfer, regionsPlugin;
+    let wavesurferReady = false;
+    let audioDuration = 0;
+
+    // Wavesurfer region state (wizard-textarea pattern). Each paragraph
+    // becomes a region keyed by `para:<idx>`. activeKey/activeStopAt drive
+    // the segment-play auto-stop in the audioprocess handler.
+    const COLOR_UNTOUCHED = 'rgba(150, 150, 150, 0.12)';   // working
+    const COLOR_STAGED    = 'rgba( 44, 138,  63, 0.22)';   // staged
+    const COLOR_PLAYING   = 'rgba(255, 235,  59, 0.55)';   // currently playing
+    let regionsByKey = new Map();
+    let activeStopAt = null;
+    let activeKey = null;
+    let activePara = null;
+
+    // ── Transcript rendering ─────────────────────────────────────────────
+    // Build a unified row list — working paragraphs + staged records,
+    // sorted by start time. Each row carries its kind so the renderer can
+    // pick the right DOM shape. The pause-before for each row is computed
+    // against the PRECEDING row's end (regardless of kind), so the cascade
+    // works seamlessly across mixed rows.
+    function buildUnifiedRows() {
+      const rows = [];
+      for (let p = 0; p < paragraphs.length; p++) {
+        rows.push({ kind: 'work', para: paragraphs[p], paraIdx: p,
+                    start: paragraphs[p].start, end: paragraphs[p].end });
+      }
+      for (const rec of stagedRecords) {
+        rows.push({ kind: 'staged', rec, start: rec.start, end: rec.end });
+      }
+      rows.sort((a, b) => a.start - b.start);
+      return rows;
+    }
+
+    function renderTranscript(flashStagedId) {
+      // Render into .transcript-inner (the 880px-constrained wrapper), not
+      // #transcript itself — the outer #transcript is the full-width scroll
+      // container and must stay intact so its overflow clipping doesn't
+      // crop the absolute-positioned timing columns at the page-left side.
+      const root = document.querySelector('#transcript .transcript-inner');
+      root.innerHTML = '';
+      wordSpans = new Array(words.length).fill(null);
+
+      const rows = buildUnifiedRows();
+      const firstUnstagedIdx = rows.findIndex(r => r.kind === 'work');
+      let prevEnd = null;
+      // unstagedRank is the row's position relative to firstUnstagedIdx
+      // (0 = top-most unstaged, 1 = next, …). Used for split-gating + the
+      // → Stage button gating.
+      let unstagedRank = -1;
+      // The merge button is enabled on the FIRST row where merging would
+      // actually do something — i.e., first work row whose paraIdx > 0
+      // (its previous working paragraph exists). In linear flow the
+      // top-most unstaged has paraIdx 0 (nothing to merge with), so this
+      // skips to the second unstaged row — which is what the user wants.
+      // Tracked across the row loop so only one row gets the enabled +.
+      let firstMergeableRank = -1;
+
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        const pauseBefore = (prevEnd != null) ? (row.start - prevEnd) : null;
+        let node;
+        if (row.kind === 'work') {
+          if (firstUnstagedIdx >= 0) unstagedRank = r - firstUnstagedIdx;
+          const isFirstUnstaged = (unstagedRank === 0);
+          const canSplit = (unstagedRank >= 0 && unstagedRank < SPLITTABLE_UNSTAGED_ROWS);
+          // Merge state: 'hidden' (no previous at all), 'enabled' (this
+          // row is the first that can usefully merge), or 'locked'.
+          let mergeState = 'locked';
+          if (pauseBefore == null) {
+            mergeState = 'hidden';   // very first row of unified list
+          } else if (firstMergeableRank < 0 && unstagedRank >= 0 && row.paraIdx > 0) {
+            mergeState = 'enabled';
+            firstMergeableRank = unstagedRank;
+          }
+          node = renderWorkRow(row.para, row.paraIdx, pauseBefore, isFirstUnstaged, canSplit, mergeState);
+        } else {
+          node = renderStagedRow(row.rec, pauseBefore);
+        }
+        // Linear-flow fade: rows AT and ABOVE the first unstaged row stay
+        // fully opaque (already-decided context + active focus); rows
+        // below fade progressively to 0.5 as you scroll further out of
+        // the current decision zone.
+        if (firstUnstagedIdx >= 0 && r > firstUnstagedIdx) {
+          const dist = r - firstUnstagedIdx;
+          const opacity = Math.max(0.5, 1.0 - 0.5 * (dist / FADE_TO_HALF_OVER_ROWS));
+          node.style.opacity = String(opacity);
+        }
+        root.appendChild(node);
+        prevEnd = row.end;
+      }
+
+      // Re-apply the playhead highlight after a rebuild.
+      if (currentWordIdx != null && wordSpans[currentWordIdx]) {
+        wordSpans[currentWordIdx].classList.add('current');
+      }
+      // Flash a just-staged row to draw the eye to its new inline location.
+      if (flashStagedId) {
+        const stagedDiv = root.querySelector(`.paragraph[data-staged-id="${flashStagedId}"]`);
+        if (stagedDiv) {
+          flashElement(stagedDiv);
+          stagedDiv.scrollIntoView({ block: 'nearest' });
+        }
+      }
+    }
+
+    function buildTimingColumn(start, end, pauseBeforeSec) {
+      const timing = document.createElement('div');
+      timing.className = 'timing';
+      timing.contentEditable = 'false';
+      const rangeEl = document.createElement('span');
+      rangeEl.className = 'time-range';
+      rangeEl.textContent = `${formatHMS(start)} - ${formatHMS(end)}`;
+      timing.appendChild(rangeEl);
+      const pauseEl = document.createElement('span');
+      pauseEl.className = 'pause-marker' + (pauseBeforeSec == null ? ' hidden' : '');
+      if (pauseBeforeSec != null) {
+        pauseEl.textContent = formatPauseMs(pauseBeforeSec);
+        pauseEl.title = `Pause from previous line: ${pauseBeforeSec.toFixed(3)}s`;
+      } else {
+        pauseEl.textContent = '—';
+      }
+      timing.appendChild(pauseEl);
+      return timing;
+    }
+
+    function renderWorkRow(para, paraIdx, pauseBeforeSec, isFirstUnstaged, canSplit, mergeState) {
+      const pDiv = document.createElement('div');
+      // .split-locked styling makes inter-word gaps non-interactive on
+      // rows beyond the top-N actionable. The click handler also checks
+      // this class as a guard.
+      pDiv.className = 'paragraph' + (canSplit ? '' : ' split-locked');
+      pDiv.dataset.paraIdx = String(paraIdx);
+
+      pDiv.appendChild(buildTimingColumn(para.start, para.end, pauseBeforeSec));
+
+      const gutter = document.createElement('div');
+      gutter.className = 'gutter';
+      const mergeBtn = document.createElement('button');
+      mergeBtn.type = 'button';
+      // mergeState determined by the caller (see renderTranscript):
+      //   'hidden'  — no previous row at all (first row of unified list)
+      //   'enabled' — this is the first row where merging would actually
+      //               succeed (its previous working paragraph exists)
+      //   'locked'  — beyond the actionable zone
+      let mergeCls = 'merge-btn';
+      if (mergeState === 'hidden')      mergeCls += ' hidden';
+      else if (mergeState === 'locked') mergeCls += ' locked';
+      mergeBtn.className = mergeCls;
+      mergeBtn.dataset.paraIdx = String(paraIdx);
+      mergeBtn.textContent = '+';
+      if (mergeState === 'enabled') {
+        mergeBtn.title = 'Merge this line with the previous';
+      } else if (mergeState === 'locked') {
+        mergeBtn.title = 'Stage the line(s) above first';
+        mergeBtn.disabled = true;
+      }
+      gutter.appendChild(mergeBtn);
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'play-btn-para';
+      playBtn.dataset.paraIdx = String(paraIdx);
+      playBtn.textContent = '▶';
+      playBtn.title = 'Play this line · Shift+click → focus waveform without playing';
+      gutter.appendChild(playBtn);
+      pDiv.appendChild(gutter);
+
+      // Text-content: word spans + gap spans. Gaps are click targets for
+      // splitting; words for click-to-seek; long-pause gaps render the
+      // language-specific <pause> token where intra-paragraph silences
+      // exceed PAUSE_THRESHOLD_SEC.
+      const text = document.createElement('div');
+      text.className = 'text-content';
+      for (let i = 0; i < para.words.length; i++) {
+        const w = para.words[i];
+        if (i > 0) {
+          const prev = para.words[i - 1];
+          const gapSec = w.start - prev.end;
+          const isLongPause = gapSec > PAUSE_THRESHOLD_SEC;
+          const gap = document.createElement('span');
+          gap.className = 'gap' + (isLongPause ? ' long-pause' : '');
+          gap.dataset.after = String(prev.absoluteIdx);
+          gap.textContent = isLongPause ? PAUSE_TEXT : ' ';
+          if (isLongPause) gap.title = `${gapSec.toFixed(2)}s pause — click to split here`;
+          text.appendChild(gap);
+        }
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.dataset.start = w.start;
+        span.dataset.end   = w.end;
+        span.dataset.idx   = w.absoluteIdx;
+        span.textContent = w.text;
+        wordSpans[w.absoluteIdx] = span;
+        text.appendChild(span);
+      }
+      pDiv.appendChild(text);
+
+      // Right gutter: → Stage. Lives outside text-content for layout
+      // symmetry with the staged-row's ✕ button. Stage is enabled only on
+      // the first unstaged row in the unified list — the annotator's
+      // current decision. Every other work row gets a disabled placeholder
+      // so the column still lines up.
+      {
+        const right = document.createElement('div');
+        right.className = 'gutter-right';
+        right.contentEditable = 'false';
+        const stageBtn = document.createElement('button');
+        stageBtn.type = 'button';
+        stageBtn.className = 'stage-btn' + (isFirstUnstaged ? '' : ' locked');
+        stageBtn.dataset.paraIdx = String(paraIdx);
+        stageBtn.textContent = '→ Stage';
+        if (isFirstUnstaged) {
+          stageBtn.title = 'Stage this line — promote it to the final transcript';
+        } else {
+          stageBtn.title = 'Stage the line(s) above first';
+          stageBtn.disabled = true;
+        }
+        right.appendChild(stageBtn);
+        pDiv.appendChild(right);
+      }
+      return pDiv;
+    }
+
+    function renderStagedRow(rec, pauseBeforeSec) {
+      const pDiv = document.createElement('div');
+      pDiv.className = 'paragraph staged';
+      pDiv.contentEditable = 'false';
+      pDiv.dataset.stagedId = rec.id;
+
+      pDiv.appendChild(buildTimingColumn(rec.start, rec.end, pauseBeforeSec));
+
+      // Left gutter — placeholder for the merge slot (kept hidden so the
+      // columns line up with work rows) + the play button.
+      const gutter = document.createElement('div');
+      gutter.className = 'gutter';
+      const mergePh = document.createElement('button');
+      mergePh.type = 'button';
+      mergePh.className = 'merge-btn hidden';
+      mergePh.tabIndex = -1;
+      mergePh.textContent = '+';
+      gutter.appendChild(mergePh);
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'play-btn-para staged-play';
+      playBtn.dataset.stagedId = rec.id;
+      playBtn.textContent = '▶';
+      playBtn.title = 'Play this staged region · Shift+click → focus waveform without playing';
+      gutter.appendChild(playBtn);
+      pDiv.appendChild(gutter);
+
+      // Text-content slot: textarea instead of word spans.
+      const text = document.createElement('div');
+      text.className = 'text-content staged-content';
+      const ta = document.createElement('textarea');
+      ta.className = 'staged-text';
+      ta.spellcheck = false;
+      ta.dataset.stagedId = rec.id;
+      ta.value = rec.currentText;
+      if (rec.currentText !== rec.originalText) ta.classList.add('edited');
+      text.appendChild(ta);
+      pDiv.appendChild(text);
+
+      // Right gutter: ✕ Unstage. Same column slot as work rows' → Stage so
+      // the destructive action stays separated from the play button.
+      const right = document.createElement('div');
+      right.className = 'gutter-right';
+      const unstageBtn = document.createElement('button');
+      unstageBtn.type = 'button';
+      unstageBtn.className = 'unstage-btn-inline';
+      unstageBtn.dataset.stagedId = rec.id;
+      unstageBtn.textContent = '✕ Unstage';
+      unstageBtn.title = 'Unstage — return this region to the working list';
+      right.appendChild(unstageBtn);
+      pDiv.appendChild(right);
+
+      // Preserve playing highlight across rebuilds.
+      if (activeKey === 'staged:' + rec.id) {
+        pDiv.classList.add('playing');
+        activePara = pDiv;
+      }
+      return pDiv;
+    }
+
+    function rebuildTranscript(flashStagedId) {
+      paragraphs = buildParagraphs();
+      // A split / merge / stage changes paragraph indices and the region
+      // key inventory. Cleanly exit any active playback before redrawing
+      // so we don't leak the active highlight onto a stale region.
+      if (activeKey) {
+        if (wavesurfer && wavesurfer.isPlaying && wavesurfer.isPlaying()) wavesurfer.pause();
+        exitSegmentMode();
+      }
+      renderTranscript(flashStagedId);
+      drawAllRegions();
+    }
+
+    function flashElement(el) {
+      if (!el) return;
+      el.classList.remove('flash');
+      void el.offsetWidth;
+      el.classList.add('flash');
+    }
+
+
+    // ── Playhead → current word ─────────────────────────────────────────
+    // Bisect-search since words are time-sorted. Obama's ~5600 words would
+    // be wasteful with linear scan inside an audioprocess callback at 60Hz.
+    function findWordAt(t) {
+      let lo = 0, hi = words.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (t < words[mid].start) hi = mid - 1;
+        else if (t > words[mid].end) lo = mid + 1;
+        else return mid;
+      }
+      // Not strictly inside any word — return the nearest preceding word so
+      // the highlight doesn't jump around during inter-word silences.
+      return Math.max(0, hi);
+    }
+
+    let lastScrollTime = 0;
+    function setCurrentWord(idx) {
+      if (idx === currentWordIdx) return;
+      if (currentWordIdx != null && wordSpans[currentWordIdx]) {
+        wordSpans[currentWordIdx].classList.remove('current');
+      }
+      currentWordIdx = idx;
+      if (idx != null && wordSpans[idx]) {
+        wordSpans[idx].classList.add('current');
+        // Throttle auto-scroll so it doesn't fight the user's manual scroll.
+        // 250ms is comfortable on Obama-length recordings.
+        const now = performance.now();
+        if (now - lastScrollTime > 250) {
+          lastScrollTime = now;
+          wordSpans[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+      }
+    }
+
+    // ── Word clicks → seek ──────────────────────────────────────────────
+    function onTranscriptClick(e) {
+      const span = e.target.closest('.word');
+      if (!span) return;
+      // Disable click-to-seek on faded rows beyond the actionable zone —
+      // same gating as gap-click (split-locked is added to rows where
+      // unstagedRank >= SPLITTABLE_UNSTAGED_ROWS, matching the start of
+      // the opacity fade).
+      if (span.closest('.paragraph')?.classList.contains('split-locked')) return;
+      const start = parseFloat(span.dataset.start);
+      if (!Number.isFinite(start)) return;        // edited word, no alignment
+      if (wavesurferReady) wavesurfer.setTime(start);
+    }
+
+    // ── Split / merge ────────────────────────────────────────────────────
+    // Pure data mutations + rebuild. Called from the gap-click and merge-
+    // button handlers; no cursor state involved.
+    function splitAfterAbsoluteIdx(idx) {
+      if (breakAfterWord.has(idx)) return;
+      breakAfterWord.add(idx);
+      rebuildTranscript();
+    }
+    function mergeIntoPreviousParagraph(paraIdx) {
+      if (paraIdx <= 0 || paraIdx >= paragraphs.length) return;
+      const prev = paragraphs[paraIdx - 1];
+      const breakIdx = prev.wordRefs[prev.wordRefs.length - 1].absoluteIdx;
+      if (!breakAfterWord.has(breakIdx)) return;
+      breakAfterWord.delete(breakIdx);
+      rebuildTranscript();
+    }
+
+    // ── Stage / unstage ──────────────────────────────────────────────────
+    // Inline staging: no modal step. The right-gutter → button commits the
+    // paragraph using word-derived bounds and the ASR text (with <pause>
+    // tokens stripped). The row becomes a staged-kind row in place; the ✕
+    // button unstages, restoring the exact pre-stage break state.
+    function pauseTextRe() {
+      const tokens = Object.values(PAUSE_TEXT_BY_LANG).map(t =>
+        t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      return new RegExp(tokens.join('|'), 'g');
+    }
+    function stripPauseTokens(s) {
+      return s.replace(pauseTextRe(), ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // Apply Phase-4-style padding to a single paragraph's bounds being
+    // promoted to staged status. Differs from the wizard's batch phase4Pad
+    // in that neighbours aren't being padded simultaneously — only this
+    // region. So instead of the wizard's "share midpoint when both sides
+    // would invade the gap" rule, we just clamp against existing
+    // neighbours (working paragraphs not yet staged + staged records that
+    // may already carry their own padding). First-stager-wins on a shared
+    // gap; subsequent stages get less padding on the constrained side.
+    function padBoundsAtStage(start, end, paraIdx) {
+      const wantStart = start - STAGE_PAD_START_SEC;
+      const wantEnd   = end   + STAGE_PAD_END_SEC;
+      const totalDur  = (wavesurfer && wavesurfer.getDuration) ? wavesurfer.getDuration() : Infinity;
+      // Previous neighbour's end. Falls back to 0 (start of recording).
+      let prevEnd = 0;
+      if (paragraphs[paraIdx - 1]) prevEnd = Math.max(prevEnd, paragraphs[paraIdx - 1].end);
+      for (const rec of stagedRecords) {
+        if (rec.end <= start) prevEnd = Math.max(prevEnd, rec.end);
+      }
+      // Next neighbour's start. Falls back to recording duration.
+      let nextStart = totalDur;
+      if (paragraphs[paraIdx + 1]) nextStart = Math.min(nextStart, paragraphs[paraIdx + 1].start);
+      for (const rec of stagedRecords) {
+        if (rec.start >= end) nextStart = Math.min(nextStart, rec.start);
+      }
+      const newStart = Math.max(0, Math.max(wantStart, prevEnd));
+      const newEnd   = Math.min(totalDur, Math.min(wantEnd, nextStart));
+      // Safety: if clamping collapsed the bounds, fall back to unpadded.
+      if (newStart >= newEnd) return { start, end };
+      return { start: newStart, end: newEnd };
+    }
+
+    function stageParagraph(paraIdx) {
+      const para = paragraphs[paraIdx];
+      if (!para) return;
+      const wordIndices = para.words.map(w => w.absoluteIdx);
+      const lo = wordIndices[0];
+      const hi = wordIndices[wordIndices.length - 1];
+      const interiorBreaks = [];
+      for (let i = lo; i < hi; i++) if (breakAfterWord.has(i)) interiorBreaks.push(i);
+      const seedText = stripPauseTokens(para.text);
+      // Pre-pad bounds BEFORE the record is created / rendered / focused,
+      // so the green region appears in its final position the first time
+      // it's drawn. The annotator sees the post-padded region during the
+      // flash and can then edge-resize from there. `wordStart`/`wordEnd`
+      // hang on to the pre-pad bounds in case downstream consumers want
+      // them; `originalStart`/`originalEnd` are the post-pad bounds that
+      // `boundsEdited` compares against.
+      const padded = padBoundsAtStage(para.start, para.end, paraIdx);
+      const record = {
+        id: 'staged-' + (++stagedIdSeq),
+        wordIndices,
+        start: padded.start,
+        end:   padded.end,
+        originalStart: padded.start,
+        originalEnd:   padded.end,
+        wordStart: para.start,
+        wordEnd:   para.end,
+        boundsEdited: false,
+        originalText: seedText,
+        currentText:  seedText,
+        interiorBreaks,
+        createdAt: Date.now(),
+      };
+      stagedRecords.push(record);
+      for (const i of wordIndices) stagedWordIndices.add(i);
+      stagedRecords.sort((a, b) => a.start - b.start);
+      // Working paragraph indices and region keys shift after a stage.
+      // Pause any in-flight playback so the active highlight doesn't dangle.
+      if (wavesurfer && wavesurfer.isPlaying && wavesurfer.isPlaying()) wavesurfer.pause();
+      exitSegmentMode();
+      rebuildTranscript(record.id);
+      // Bring the new region into the waveform viewport without playing
+      // it — gives the annotator a chance to decide whether the bounds
+      // need a resize before they commit to listening.
+      focusRegionInWaveform(record.start, record.end);
+    }
+    function unstageRecord(id) {
+      const idx = stagedRecords.findIndex(r => r.id === id);
+      if (idx < 0) return;
+      const rec = stagedRecords[idx];
+      const lo = rec.wordIndices[0];
+      const hi = rec.wordIndices[rec.wordIndices.length - 1];
+      for (let i = lo; i < hi; i++) breakAfterWord.delete(i);
+      for (const b of rec.interiorBreaks) breakAfterWord.add(b);
+      for (const i of rec.wordIndices) stagedWordIndices.delete(i);
+      stagedRecords.splice(idx, 1);
+      if (wavesurfer && wavesurfer.isPlaying && wavesurfer.isPlaying()) wavesurfer.pause();
+      exitSegmentMode();
+      rebuildTranscript();
+    }
+
+    // ── Wavesurfer regions + segment playback ────────────────────────────
+    // One region per paragraph, with the paragraph text as the visible
+    // label. Click a region (or the line's ▶ button) → play that paragraph
+    // start→end with an audioprocess-driven auto-stop. The corresponding
+    // paragraph div gets scrolled into view and a flash highlight, with
+    // .playing applied for the duration of the segment.
+    function setRegionColor(region, color) {
+      if (typeof region.setOptions === 'function') {
+        try { region.setOptions({ color }); return; } catch (e) {}
+      }
+      if (region.element && region.element.style) region.element.style.background = color;
+    }
+    function clearAllRegions() {
+      for (const r of regionsByKey.values()) { try { r.remove(); } catch (e) {} }
+      regionsByKey.clear();
+    }
+    function drawAllRegions() {
+      if (!wavesurferReady || !regionsPlugin) return;
+      clearAllRegions();
+      // Working paragraphs (grey, fully locked).
+      for (let p = 0; p < paragraphs.length; p++) {
+        const para = paragraphs[p];
+        const key = 'para:' + p;
+        const r = regionsPlugin.addRegion({
+          id: key, start: para.start, end: para.end, color: COLOR_UNTOUCHED,
+          drag: false, resize: false,
+          data: { kind: 'work', paraIdx: p },
+        });
+        regionsByKey.set(key, r);
+        attachRegionClickHandler(r, key);
+      }
+      // Staged regions (green, edge-resizable but not draggable — see plan).
+      for (const rec of stagedRecords) {
+        const key = 'staged:' + rec.id;
+        const r = regionsPlugin.addRegion({
+          id: key, start: rec.start, end: rec.end, color: COLOR_STAGED,
+          drag: false, resize: true,
+          data: { kind: 'staged', stagedId: rec.id },
+        });
+        regionsByKey.set(key, r);
+        attachRegionClickHandler(r, key);
+      }
+      // If something was playing, restore its yellow tint after the redraw.
+      if (activeKey && regionsByKey.has(activeKey)) {
+        setRegionColor(regionsByKey.get(activeKey), COLOR_PLAYING);
+      }
+    }
+    function attachRegionClickHandler(region, key) {
+      // Wavesurfer v7 sets inline `pointer-events: none` on regions when
+      // both drag and resize are disabled — clicks would otherwise pass
+      // through to the waveform seek. Force pointer events on and bind a
+      // direct DOM click listener; bypass the plugin's own event system.
+      const el = region.element;
+      if (!el) return;
+      el.style.pointerEvents = 'auto';
+      // Don't force pointer cursor on staged regions — the resize handles
+      // have their own cursors (e.g. ew-resize) and we shouldn't override.
+      if (!key.startsWith('staged:')) el.style.cursor = 'pointer';
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (key.startsWith('staged:')) {
+          const id = key.slice(7);
+          const rec = stagedRecords.find(r => r.id === id);
+          if (rec) playStagedRecord(rec);
+        } else {
+          const paraIdx = parseInt(key.slice(5));
+          playParagraph(paraIdx);
+        }
+      });
+    }
+    function restingColorForKey(key) {
+      return key && key.startsWith('staged:') ? COLOR_STAGED : COLOR_UNTOUCHED;
+    }
+    // Briefly tint a region yellow then restore its resting colour. Used
+    // for shift+click "show me where this is" feedback. If the region
+    // becomes the actively-playing one during the flash window, the
+    // restore step bails so we don't fight the play highlight.
+    function flashRegionYellow(key) {
+      if (!regionsByKey.has(key) || activeKey === key) return;
+      const region = regionsByKey.get(key);
+      setRegionColor(region, COLOR_PLAYING);
+      setTimeout(() => {
+        if (activeKey === key) return;   // user started playing it; leave yellow
+        if (!regionsByKey.has(key)) return;  // region was removed (stage/unstage)
+        setRegionColor(regionsByKey.get(key), restingColorForKey(key));
+      }, 600);
+    }
+    // Flip the per-row play button glyph for the row whose region is the
+    // currently-active one. Bound to wavesurfer's play/pause events so the
+    // button reflects audio state without each interaction having to set
+    // it explicitly. activeKey is the source of truth for which row is
+    // current; if no row is active the call is a no-op.
+    function updateActiveRowPlayIcon(glyph) {
+      if (!activeKey) return;
+      let selector;
+      if (activeKey.startsWith('staged:')) {
+        const id = activeKey.slice(7);
+        selector = `.play-btn-para[data-staged-id="${id}"]`;
+      } else {
+        const paraIdx = activeKey.slice(5);
+        // Disambiguate from staged play buttons which also carry data-para-idx
+        // would be ambiguous if staged set it — they don't.
+        selector = `.play-btn-para[data-para-idx="${paraIdx}"]:not([data-staged-id])`;
+      }
+      const btn = document.querySelector(selector);
+      if (btn) btn.textContent = glyph;
+    }
+    function exitSegmentMode() {
+      if (activeKey && regionsByKey.has(activeKey)) {
+        setRegionColor(regionsByKey.get(activeKey), restingColorForKey(activeKey));
+      }
+      if (activePara) activePara.classList.remove('playing');
+      // Reset the active row's play glyph to ▶ BEFORE clearing activeKey.
+      // The wavesurfer 'pause' event also flips this, but its handler may
+      // fire AFTER this function returns (async emit), at which point
+      // activeKey would already be null and the flip would no-op. Doing
+      // it here ensures the glyph resets on every exit path (auto-stop,
+      // waveform interaction, stage/unstage), independent of event timing.
+      updateActiveRowPlayIcon('▶');
+      activeStopAt = null;
+      activeKey = null;
+      activePara = null;
+    }
+    function playParagraph(paraIdx) {
+      const para = paragraphs[paraIdx];
+      if (!para) return;
+      const div = $(`#transcript .paragraph[data-para-idx="${paraIdx}"]`)[0];
+      playRegionWindow(para.start, para.end, 'para:' + paraIdx, div);
+    }
+    function playStagedRecord(rec) {
+      if (!rec) return;
+      const div = document.querySelector(`#transcript .paragraph[data-staged-id="${rec.id}"]`);
+      playRegionWindow(rec.start, rec.end, 'staged:' + rec.id, div);
+    }
+    function playRegionWindow(start, end, key, highlightEl) {
+      // Pause-then-play to avoid an in-flight audioprocess callback from
+      // the OLD playback position tripping the new activeStopAt guard.
+      if (wavesurfer && wavesurfer.isPlaying && wavesurfer.isPlaying()) {
+        activeStopAt = null;
+        wavesurfer.pause();
+      }
+      if (activeKey && activeKey !== key && regionsByKey.has(activeKey)) {
+        setRegionColor(regionsByKey.get(activeKey), restingColorForKey(activeKey));
+      }
+      if (activePara) activePara.classList.remove('playing');
+      const region = regionsByKey.get(key);
+      if (region) setRegionColor(region, COLOR_PLAYING);
+      if (highlightEl) {
+        highlightEl.classList.add('playing');
+        flashElement(highlightEl);
+        highlightEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        activePara = highlightEl;
+      }
+      activeStopAt = end;
+      activeKey = key;
+      // With autoScroll disabled, an offscreen region won't drift into
+      // view on its own — bring it in before starting playback.
+      focusRegionInWaveform(start, end);
+      wavesurfer.play(start);
+    }
+
+    // Scroll the waveform so the [start, end] region is comfortably
+    // centred with at least BUFFER_SEC of audio visible on each side.
+    // No-op if the region (with buffers) is already entirely in view —
+    // avoids jarring shifts when clicking already-visible regions.
+    const FOCUS_BUFFER_SEC = 1.0;
+    function focusRegionInWaveform(start, end) {
+      if (!wavesurfer || !wavesurferReady) return;
+      const wrapper = wavesurfer.getWrapper && wavesurfer.getWrapper();
+      const scrollEl = wrapper && wrapper.parentElement;
+      if (!scrollEl) return;
+      const pxPerSec = wavesurfer.options.minPxPerSec || 50;
+      const viewportWidth = scrollEl.clientWidth;
+      const totalDur = wavesurfer.getDuration() || 0;
+      const totalWidthPx = totalDur * pxPerSec;
+
+      const bufferPx = FOCUS_BUFFER_SEC * pxPerSec;
+      const regionStartPx = start * pxPerSec;
+      const regionEndPx   = end * pxPerSec;
+      const regionWidthPx = regionEndPx - regionStartPx;
+      const regionCenterPx = (regionStartPx + regionEndPx) / 2;
+
+      // Already comfortably in view? Don't move.
+      const curScroll = scrollEl.scrollLeft;
+      if (regionStartPx - bufferPx >= curScroll &&
+          regionEndPx   + bufferPx <= curScroll + viewportWidth) {
+        return;
+      }
+
+      // Try to centre the region.
+      let scroll = regionCenterPx - viewportWidth / 2;
+      // If the region + 2s of buffer fits in the viewport, honour the
+      // buffer constraints on each side. Otherwise just centre.
+      if (regionWidthPx + 2 * bufferPx <= viewportWidth) {
+        const minScroll = regionEndPx + bufferPx - viewportWidth;   // buffer at the right
+        const maxScroll = regionStartPx - bufferPx;                 // buffer at the left
+        scroll = Math.max(minScroll, Math.min(maxScroll, scroll));
+      }
+      // Clamp to valid range.
+      const maxValidScroll = Math.max(0, totalWidthPx - viewportWidth);
+      scroll = Math.max(0, Math.min(scroll, maxValidScroll));
+
+      if (typeof wavesurfer.setScroll === 'function') {
+        wavesurfer.setScroll(scroll);
+      } else {
+        scrollEl.scrollLeft = scroll;
+      }
+    }
+
+    // ── Bootstrap ────────────────────────────────────────────────────────
+    $(document).ready(function () {
+      regionsPlugin = window.WaveSurfer.Regions.create();
+      wavesurfer = WaveSurfer.create({
+        container: '#waveform',
+        waveColor: '#d9dcff',
+        progressColor: '#9aa0d9',
+        cursorColor: '#4a90e2',
+        height: 180,
+        backend: 'mediaelement',
+        plugins: [regionsPlugin],
+        barWidth: 1,
+        barGap: 0,
+        minPxPerSec: 65,
+        // Keep the waveform stationary during playback — no horizontal
+        // scroll-follow. Regions, click-to-play, and the cursor still
+        // function; only the auto-scroll behaviour is disabled.
+        autoScroll: false,
+        autoCenter: false,
+        fillParent: false,
+      });
+      wavesurfer.load(recordingUrl);
+
+      function updateTime() {
+        const t = wavesurfer.getCurrentTime();
+        const d = audioDuration || wavesurfer.getDuration();
+        $('#timeDisplay').text(`${formatTime(t)} / ${formatTime(d)}`);
+      }
+
+      wavesurfer.on('audioprocess', (t) => {
+        updateTime();
+        if (words.length) setCurrentWord(findWordAt(t));
+        // Auto-stop when segment playback reaches its end.
+        if (activeStopAt !== null && t >= activeStopAt) {
+          wavesurfer.pause();
+          exitSegmentMode();
+        }
+      });
+      wavesurfer.on('seeking',    updateTime);
+      wavesurfer.on('timeupdate', (t) => {
+        // timeupdate fires on seeks too, so use it for highlight sync as
+        // well as the display — keeps the current-word in sync when the
+        // user clicks a word without playing.
+        if (words.length) setCurrentWord(findWordAt(t));
+      });
+      wavesurfer.on('play',  () => { $('#playPause').text('⏸'); updateActiveRowPlayIcon('⏸'); });
+      wavesurfer.on('pause', () => { $('#playPause').text('▶'); updateActiveRowPlayIcon('▶'); });
+
+      wavesurfer.on('ready', () => {
+        audioDuration = wavesurfer.getDuration();
+        wavesurferReady = true;
+        updateTime();
+        if (paragraphs.length) drawAllRegions();
+      });
+
+      $('#playPause').on('click', () => {
+        if (wavesurfer.isPlaying()) wavesurfer.pause();
+        else { exitSegmentMode(); wavesurfer.play(); }
+      });
+      // Clicking the waveform (outside any region) seeks. Clear any active
+      // segment so the play doesn't auto-stop at a no-longer-relevant end.
+      wavesurfer.on('interaction', exitSegmentMode);
+
+      // Staged regions are resize-only (drag: false). region-updated fires
+      // continuously during an edge drag; sync the staged record's bounds
+      // back to the data model, live-update the row's time-range display,
+      // and follow the new end if this region is the currently-playing one.
+      regionsPlugin.on('region-updated', (region) => {
+        const id = region.id || '';
+        if (!id.startsWith('staged:')) return;
+        const stagedId = id.slice(7);
+        const rec = stagedRecords.find(r => r.id === stagedId);
+        if (!rec) return;
+        rec.start = region.start;
+        rec.end   = region.end;
+        rec.boundsEdited =
+          (rec.start !== rec.originalStart || rec.end !== rec.originalEnd);
+        // Update the time-range readout in the staged row's timing column.
+        const row = document.querySelector(`#transcript .paragraph[data-staged-id="${rec.id}"]`);
+        if (row) {
+          const tr = row.querySelector('.time-range');
+          if (tr) tr.textContent = `${formatHMS(rec.start)} - ${formatHMS(rec.end)}`;
+        }
+        if (activeKey === id) activeStopAt = rec.end;
+      });
+      regionsPlugin.on('region-update-end', (region) => {
+        if (!region.id || !region.id.startsWith('staged:')) return;
+        // An edge drag may have crossed a neighbour in time order; re-sort
+        // and rebuild so the unified row list stays sorted by start. This
+        // also recomputes pause-before cascades for both the moved region
+        // and the rows around it.
+        stagedRecords.sort((a, b) => a.start - b.start);
+        rebuildTranscript();
+      });
+      $('input[name="speed"]').on('change', function () {
+        wavesurfer.setPlaybackRate(parseFloat(this.value));
+      });
+      // Filter radio — drives body class. No DOM rebuild; CSS hides rows
+       // of the unwanted kind.
+      $('input[name="filter"]').on('change', function () {
+        document.body.classList.remove('filter-all', 'filter-unstaged', 'filter-staged');
+        if (this.value !== 'all') document.body.classList.add('filter-' + this.value);
+      });
+
+      $('#showTimes').on('change', function () {
+        document.body.classList.toggle('show-times', this.checked);
+      });
+      $('#showPauses').on('change', function () {
+        document.body.classList.toggle('show-pauses', this.checked);
+      });
+
+      // Menu open/close. Click a trigger to toggle its menu (and close
+      // any others). Click outside closes any open menu. Clicks on menu
+      // items inside checkboxes/radios keep the menu open so multiple
+      // toggles can be flipped without reopening. Plain action items
+      // (Corpus selections) navigate away so the open state is moot.
+      $('.menu-trigger').on('click', function (e) {
+        e.stopPropagation();
+        const menu = this.parentElement;
+        const wasOpen = menu.classList.contains('open');
+        document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+        if (!wasOpen) menu.classList.add('open');
+      });
+      $(document).on('click', function (e) {
+        if (!e.target.closest('.menu')) {
+          document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+        }
+      });
+
+      $('#transcript').on('click', onTranscriptClick);
+      // Click-mode affordances. The .word click handler above seeks; these
+      // route .gap and .merge-btn clicks to split / merge operations. The
+      // selectors are disjoint from .word so they don't conflict.
+      $('#transcript').on('click', '.gap', function (e) {
+        e.stopPropagation();
+        // Block splits on rows beyond the top SPLITTABLE_UNSTAGED_ROWS.
+        if (this.closest('.paragraph')?.classList.contains('split-locked')) return;
+        const after = parseInt(this.dataset.after);
+        if (!Number.isFinite(after)) return;
+        splitAfterAbsoluteIdx(after);
+      });
+      $('#transcript').on('click', '.merge-btn', function (e) {
+        e.stopPropagation();
+        // Same gating as stage: native disabled + .locked class belt-and-braces.
+        if (this.disabled || this.classList.contains('locked')) return;
+        const paraIdx = parseInt(this.dataset.paraIdx);
+        if (!Number.isFinite(paraIdx)) return;
+        mergeIntoPreviousParagraph(paraIdx);
+      });
+      $('#transcript').on('click', '.play-btn-para', function (e) {
+        e.stopPropagation();
+        // Determine the region key + bounds this button targets.
+        const isStaged = !!this.dataset.stagedId;
+        let start, end;
+        if (isStaged) {
+          const rec = stagedRecords.find(r => r.id === this.dataset.stagedId);
+          if (!rec) return;
+          start = rec.start; end = rec.end;
+        } else {
+          const paraIdx = parseInt(this.dataset.paraIdx);
+          if (!Number.isFinite(paraIdx)) return;
+          const para = paragraphs[paraIdx];
+          if (!para) return;
+          start = para.start; end = para.end;
+        }
+        // Shift+click: focus the region in the waveform but don't play.
+        // Useful for previewing bounds before committing to audio playback.
+        // Also briefly flashes the region yellow so the eye can find it
+        // after the scroll — same yellow as the playing colour but only
+        // for ~600ms.
+        if (e.shiftKey) {
+          focusRegionInWaveform(start, end);
+          const flashKey = isStaged
+            ? 'staged:' + this.dataset.stagedId
+            : 'para:' + parseInt(this.dataset.paraIdx);
+          flashRegionYellow(flashKey);
+          return;
+        }
+        // Plain click on the currently-playing row → pause toggle. Keeps
+        // activeKey so a subsequent click restarts (or the global play/
+        // pause button resumes).
+        const key = isStaged
+          ? 'staged:' + this.dataset.stagedId
+          : 'para:' + parseInt(this.dataset.paraIdx);
+        if (key === activeKey && wavesurfer && wavesurfer.isPlaying && wavesurfer.isPlaying()) {
+          wavesurfer.pause();
+          return;
+        }
+        // Otherwise start (or restart) playback of this region.
+        if (isStaged) {
+          const rec = stagedRecords.find(r => r.id === this.dataset.stagedId);
+          if (rec) playStagedRecord(rec);
+        } else {
+          const paraIdx = parseInt(this.dataset.paraIdx);
+          if (!Number.isFinite(paraIdx)) return;
+          playParagraph(paraIdx);
+        }
+      });
+      $('#transcript').on('click', '.stage-btn', function (e) {
+        e.stopPropagation();
+        // Defensive: native `disabled` already suppresses click events, but
+        // the `.locked` class guard ensures consistency if disabled ever
+        // gets out of sync with the class.
+        if (this.disabled || this.classList.contains('locked')) return;
+        const paraIdx = parseInt(this.dataset.paraIdx);
+        if (!Number.isFinite(paraIdx)) return;
+        stageParagraph(paraIdx);
+      });
+      $('#transcript').on('click', '.unstage-btn-inline', function (e) {
+        e.stopPropagation();
+        const id = this.dataset.stagedId;
+        if (id) unstageRecord(id);
+      });
+      // Capture textarea edits into rec.currentText so rebuilds don't lose
+      // them; flip .edited highlighting when text diverges from the ASR
+      // seed.
+      $('#transcript').on('input', '.staged-text', function () {
+        const rec = stagedRecords.find(r => r.id === this.dataset.stagedId);
+        if (!rec) return;
+        rec.currentText = this.value;
+        this.classList.toggle('edited', rec.currentText !== rec.originalText);
+      });
+
+      // Spacebar toggles play/pause when focus isn't in an editable element.
+      $(document).on('keydown', (e) => {
+        if (e.code !== 'Space') return;
+        const t = e.target;
+        if (t && t.matches && t.matches('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
+        e.preventDefault();
+        $('#playPause').trigger('click');
+      });
+
+      fetch(wordsUrl)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${wordsUrl}`); return r.json(); })
+        .then(data => {
+          words = data;
+          // Decide format mode BEFORE rebuild — renderTranscript calls
+          // formatHMS which reads this flag.
+          isLongRecording = words.length > 0 && words[words.length - 1].end >= 3600;
+          seedBreaksFromGaps();
+          rebuildTranscript();
+        })
+        .catch(err => { $('#error').show().text('Failed to load words: ' + err.message); });
+    });
+  </script>
+</body>
+</html>
